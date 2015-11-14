@@ -29,9 +29,10 @@ clean:
 	rm -f *.gv *.png
 
 run: parser
-	./parser test.c
+	./parser ../test/test.c
 
 png: AST_Graph.gv
-	dot AST_Graph.gv -Tpng -o test.png
+	-mv AST_Graph.gv ../test 
+	dot ../test/AST_Graph.gv -Tpng -o ../test/test.png
 
 all: clean run png
