@@ -1,25 +1,39 @@
-TARGET = scanner
-OBJECT = lex.yy.o symboltable.o 
-CC = cc -g
+TARGET = parser
+OBJECT = parser.tab.c parser.tab.o lex.yy.c alloc.o functions.o semanticAnalysis.o codeGeneration.o symbolTable.o
+OUTPUT = parser.output parser.tab.h
+CC = gcc -g
 LEX = flex
+YACC = bison -v
+YACCFLAG = -d
 LIBS = -lfl 
 
-scanner:	lex.yy.o symboltable.o
-	$(CC) -o scanner lex.yy.o symboltable.o
+parser: parser.tab.o alloc.o functions.o symbolTable.o semanticAnalysis.o codeGeneration.o
+	$(CC) -o $(TARGET) parser.tab.o alloc.o functions.o symbolTable.o semanticAnalysis.o codeGeneration.o $(LIBS)
 
-symboltable.o: symboltable.c 
-	$(CC) -c symboltable.c 
+parser.tab.o: parser.tab.c lex.yy.c alloc.o functions.c symbolTable.o semanticAnalysis.o codeGeneration.o
+	$(CC) -c parser.tab.c
+    
+semanticAnalysis.o: semanticAnalysis.c symbolTable.o
+	$(CC) -c semanticAnalysis.c
 
-lex.yy.o: lex.yy.c 
-	$(CC) -c lex.yy.c 
+codeGeneration.o: codeGeneration.c codeGeneration.o
+	$(CC) -c codeGeneration.c
 
-lex.yy.c: lexer.l
-	$(LEX) $(LIB) lexer.l
+symbolTable.o: symbolTable.c
+	$(CC) -c symbolTable.c
+
+lex.yy.c: lexer3.l
+	$(LEX) lexer3.l
+
+parser.tab.c: parser.y 
+	$(YACC) $(YACCFLAG) parser.y
+
+alloc.o: alloc.c
+	$(CC) -c alloc.c
+	
+functions.o: functions.c
+	$(CC) -c functions.c
 
 clean:
-	rm -f $(TARGET) $(OBJECT) 
-
-run: scanner
-	./scanner ../test/test.c
-	./scanner ../test/my1.c
+	rm -f $(TARGET) $(OBJECT) $(OUTPUT)
 
