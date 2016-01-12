@@ -1,0 +1,9 @@
+f ibcv
+f fxy
+f namestr
+f uusetool
+fxy = 7.5
+namestr = fxy - 10/2
+uusetool = fxy - 5.5
+ibcv = fxy * uusetool - fxy / namestr
+p ibcv
