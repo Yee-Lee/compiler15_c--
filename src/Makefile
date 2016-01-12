@@ -36,4 +36,6 @@ functions.o: functions.c
 
 clean:
 	rm -f $(TARGET) $(OBJECT) $(OUTPUT)
-
+	
+all: parser
+	cp parser ../run/parser
