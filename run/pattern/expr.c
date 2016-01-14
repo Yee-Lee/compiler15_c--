@@ -1,4 +1,4 @@
-int main() {
+int MAIN() {
     int i, j, k;
     float m, n, l;
     k = (1 + 2) * 3 - 4/5 + -1;
@@ -22,44 +22,8 @@ int main() {
     l = m*n - l*4.0 - 5.0;
     write(l);
     write("\n");
-
-    k = 1 > 2;
-    write(k);
+    l = l/(2.0*l);
+    write(l);
     write("\n");
-
-    k = 2 >= 2;
-    write(k);
-    write("\n");
-
-    k = 1 < 2;
-    write(k);
-    write("\n");
-
-    k = 2 <= 2;
-    write(k);
-    write("\n");
-
-    k = 1 != 2;
-    write(k);
-    write("\n");
-
-    k = 1 == 2;
-    write(k);
-    write("\n");
-
-
-    k = 1.0 > 2.0;
-    write(k);
-    write("\n");
-
-    k = 1.0 < 2.0;
-    write(k);
-    write("\n");
-
-
-    k = 1.0 != 2.0;
-    write(k);
-    write("\n");
-
     return 0;
 }

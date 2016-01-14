@@ -1,65 +1,47 @@
-int main() {
-    int a, b;
-    float c, d;
-    a = 1;
-    b = 0;
-    if (a > b) {
-        write("correct\n");
-    } else {
-        write("wrong\n");
-    }
-    if (a < b) {
-        write("wrong\n");
-    } else {
-        write("correct\n");
-    }
-    if (a == b) {
-        write("wrong\n");
-    } else {
-        write("correct\n");
-    }
-    if (a != b) {
-        write("correct\n");
-    } else {
-        write("wrong\n");
-    }
+int MAIN(){
+	int t1,t2;
+	float f1,f2;
+	t1=100;
+	t2=-2;
+	f1 = 3.3;
+	f2 =-3.3;
+	if(1){
 
-    c = 1.0;
-    d = 0.0;
-    if (c > d) {
-        write("correct\n");
-    } else {
-        write("wrong\n");
-    }
-    if (c < d) {
-        write("wrong\n");
-    } else {
-        write("correct\n");
-    }
-    if (c != d) {
-        write("correct\n");
-    } else {
-        write("wrong\n");
-    }
+		if(t1>t2){
+			write("Correct!\n");
+			if(f1>f2){
 
-    if (a && b) {
-        write("wrong\n");
-    }
+				write("Correct!\n");
+				if (f1>0.0){
 
-    if (a || b) {
-        write("correct\n");
-    }
+					write("Correct!\n");
 
-    a = 0;
-    while (a<10) {
-        write("correct: ");
-        write(a);
-        write("\n");
-        a = a+1;
-    }
-    if (a == 10) {
-        write("correct\n");
-    }
-
-    return 0;
+				}
+				else{
+					write("wrong\n");
+				}
+			}
+			else{
+				write("wrong\n");
+			}
+			if(t2<t1){
+				write("Correct!\n");
+				if(t2<0){
+					write("Correct!\n");
+				}
+				else{
+					write("wrong\n");
+				}
+			}
+			else{
+				write("wrong\n");
+			}
+		}
+		else{
+			write("wrong\n");
+		}
+	}
+	else{
+		write("wrong\n");
+	}
 }
