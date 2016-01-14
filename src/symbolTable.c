@@ -80,6 +80,7 @@ void initializeSymbolTable()
     intAttribute->attr.typeDescriptor = (TypeDescriptor*)malloc(sizeof(TypeDescriptor));
     intAttribute->attr.typeDescriptor->kind = SCALAR_TYPE_DESCRIPTOR;
     intAttribute->attr.typeDescriptor->properties.dataType = INT_TYPE;
+    intAttribute->offsetInAR = -1;
     enterSymbol(SYMBOL_TABLE_INT_NAME, intAttribute);
 
     SymbolAttribute* floatAttribute = (SymbolAttribute*)malloc(sizeof(SymbolAttribute));
@@ -87,6 +88,7 @@ void initializeSymbolTable()
     floatAttribute->attr.typeDescriptor = (TypeDescriptor*)malloc(sizeof(TypeDescriptor));
     floatAttribute->attr.typeDescriptor->kind = SCALAR_TYPE_DESCRIPTOR;
     floatAttribute->attr.typeDescriptor->properties.dataType = FLOAT_TYPE;
+    floatAttribute->offsetInAR = -1;
     enterSymbol(SYMBOL_TABLE_FLOAT_NAME, floatAttribute);
 
     SymbolAttribute* voidAttribute = (SymbolAttribute*)malloc(sizeof(SymbolAttribute));
@@ -94,6 +96,7 @@ void initializeSymbolTable()
     voidAttribute->attr.typeDescriptor = (TypeDescriptor*)malloc(sizeof(TypeDescriptor));
     voidAttribute->attr.typeDescriptor->kind = SCALAR_TYPE_DESCRIPTOR;
     voidAttribute->attr.typeDescriptor->properties.dataType = VOID_TYPE;
+    voidAttribute->offsetInAR = -1;
     enterSymbol(SYMBOL_TABLE_VOID_NAME, voidAttribute);
 
     SymbolAttribute* readAttribute = NULL;
@@ -103,6 +106,7 @@ void initializeSymbolTable()
     readAttribute->attr.functionSignature->returnType = INT_TYPE;
     readAttribute->attr.functionSignature->parameterList = NULL;
     readAttribute->attr.functionSignature->parametersCount = 0;
+    readAttribute->offsetInAR = -1;
     enterSymbol(SYMBOL_TABLE_SYS_LIB_READ, readAttribute);
 
     SymbolAttribute* freadAttribute = NULL;
@@ -112,6 +116,7 @@ void initializeSymbolTable()
     freadAttribute->attr.functionSignature->returnType = FLOAT_TYPE;
     freadAttribute->attr.functionSignature->parameterList = NULL;
     freadAttribute->attr.functionSignature->parametersCount = 0;
+    freadAttribute->offsetInAR = -1;
     enterSymbol(SYMBOL_TABLE_SYS_LIB_FREAD, freadAttribute);
 }
 
@@ -308,75 +313,36 @@ void closeScope()
     --symbolTable.currentLevel;
 }
 
-char* type2str(DATA_TYPE dataType) {
-	if(dataType == INT_TYPE)
-		return "int";
-	else if(dataType == FLOAT_TYPE)
-		return "float";
-	else if(dataType == VOID_TYPE)
-		return "void";
-	else
-		return "unknown type";
+
+int isGlobalVariable(SymbolTableEntry* symbolTableEntry)
+{
+    return symbolTableEntry->nestingLevel == 0;
 }
 
-void dumpSymbolTable() {
-	printf("====================dumpSymbolTable====================\n");
-	int i;
-	for(i = 0; i < HASH_TABLE_SIZE; i++) {
-		SymbolTableEntry* entry = symbolTable.hashTable[i];
-		if(entry != NULL) {
-			printf("entry %d: ", i);
-			while(entry != NULL) {
-				switch(entry->attribute->attributeKind) {
-					case VARIABLE_ATTRIBUTE:
-						if(entry->attribute->attr.typeDescriptor->kind == SCALAR_TYPE_DESCRIPTOR)
-							printf("{%d, var, %s %s@%d} ", entry->nestingLevel, type2str(entry->attribute->attr.typeDescriptor->properties.dataType), entry->name, entry->addr);
-						else {// ARRAY_TYPE_DESCRIPTOR
-							ArrayProperties* arrayProperties = &entry->attribute->attr.typeDescriptor->properties.arrayProperties;
-							printf("{%d, var, %s %s", entry->nestingLevel, type2str(arrayProperties->elementType), entry->name);
-							int index;
-							for(index = 0; index < arrayProperties->dimension; index++) {
-								printf("[%d]", arrayProperties->sizeInEachDimension[index]);
-							}
-							printf("} ");
-						}
-						break;
-					case TYPE_ATTRIBUTE:
-						printf("{%d, type, %s %s} ", entry->nestingLevel, type2str(entry->attribute->attr.typeDescriptor->properties.dataType), entry->name);
-						break;
-					case FUNCTION_SIGNATURE:{
-						FunctionSignature* functionSignature = entry->attribute->attr.functionSignature;
-						printf("{%d, func, %s %s(", entry->nestingLevel, type2str(functionSignature->returnType), entry->name);
-						Parameter* parameter = functionSignature->parameterList;
-						int index;
-						for(index = 0; index < functionSignature->parametersCount; index++, parameter = parameter->next) {
-							if(index != 0)
-								printf(", ");
-							if(parameter->type->kind == SCALAR_TYPE_DESCRIPTOR)
-								printf("%s %s", type2str(parameter->type->properties.dataType), parameter->parameterName);
-							else { // ARRAY_TYPE_DESCRIPTOR
-								printf("%s %s", type2str(parameter->type->properties.arrayProperties.elementType), parameter->parameterName);
-								int i;
-								for(i = 0; i < parameter->type->properties.arrayProperties.dimension; i++)
-									printf("[%d]", parameter->type->properties.arrayProperties.sizeInEachDimension[i]);
-							}
-						}
-						printf(")}");
-						break;
-					}
-				}
-				entry = entry->nextInHashChain;
-			}
-			printf("\n");
-		}
-	}
-	printf("=======================================================\n\n\n");
-}
 
-void enterAddress(SymbolTableEntry* entry, int* frameSize) {
-	// now we support int or float which is 4 bytes
-	if(frameSize != NULL) {
-		*frameSize += 4;
-		entry->addr = *frameSize;
-	}
+int getVariableSize(TypeDescriptor *typeDescriptor)
+{
+    if(typeDescriptor->kind == SCALAR_TYPE_DESCRIPTOR)
+    {
+        //INT_TYPE and FLOAT_TYPE
+        return (typeDescriptor->properties.dataType == INT_TYPE)? 8 : 4;
+    }
+    else if(typeDescriptor->kind == ARRAY_TYPE_DESCRIPTOR)
+    {
+        ArrayProperties* arrayPropertiesPtr = &(typeDescriptor->properties.arrayProperties);
+        
+        int arrayElementCount = 1;
+        int index = 0;
+        for(index = 0; index < arrayPropertiesPtr->dimension; ++index)
+        {
+            arrayElementCount *= arrayPropertiesPtr->sizeInEachDimension[index];
+        }
+
+        return arrayElementCount * 4;
+    }
+    else
+    {
+        printf("Error in int getVariableSize(TypeDescriptor *typeDescriptor)\n");
+        return -1;
+    }
 }

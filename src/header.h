@@ -155,8 +155,8 @@ struct AST_NODE {
 	struct AST_NODE *leftmostSibling;
 	AST_TYPE nodeType;
     DATA_TYPE dataType;
-	int reg;
 	int linenumber;
+        int registerIndex;
 	union {
         IdentifierSemanticValue identifierSemanticValue;
         STMTSemanticValue stmtSemanticValue;
@@ -169,5 +169,6 @@ typedef struct AST_NODE AST_NODE;
 
 AST_NODE *Allocate(AST_TYPE type);
 void semanticAnalysis(AST_NODE *root);
+void codeGenerate(AST_NODE *root);
 
 #endif

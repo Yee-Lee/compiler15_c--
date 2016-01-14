@@ -3,933 +3,1436 @@
 #include <string.h>
 #include "header.h"
 #include "symbolTable.h"
-#include "util.h"
+#include "offsetInAR.h"
+#include "myRegister.h"
+#include "printSourceFile.h"
 
-void CG_processProgramNode(AST_NODE *programNode);
-void CG_processDeclarationNode(AST_NODE* declarationNode, int* frameSize);
-void CG_declareIdList(AST_NODE* declarationNode, SymbolAttributeKind isVariableOrTypeAttribute, int ignoreArrayFirstDimSize, int* frameSize);
-void CG_declareFunction(AST_NODE* declarationNode);
-void CG_processTypeNode(AST_NODE* idNodeAsType);
-void CG_processStmtNode(AST_NODE* stmtNode, int* frameSize);
-void CG_processGeneralNode(AST_NODE *node, int* frameSize);
-void CG_checkAssignmentStmt(AST_NODE* assignmentNode);
-void CG_processExprNode(AST_NODE* exprNode);
-void CG_processConstValueNode(AST_NODE* constValueNode);
-void CG_processVariableRValue(AST_NODE* idNode);
-void CG_checkFunctionCall(AST_NODE* functionCallNode, int asExpr);
-void CG_processVariableLValue(AST_NODE* idNode, int* isGlobal, int* addrOrReg);
-void CG_processExprRelatedNode(AST_NODE* exprRelatedNode);
-void CG_checkWriteFunction(AST_NODE* functionCallNode);
-void CG_checkReturnStmt(AST_NODE* returnNode);
-void CG_checkWhileStmt(AST_NODE* whileNode, int* frameSize);
-void CG_processBlockNode(AST_NODE* blockNode, int* frameSize);
-void CG_checkIfStmt(AST_NODE* ifNode, int* frameSize);
+FILE* g_codeGenOutputFp = NULL;
+char* g_currentFunctionName = NULL;
 
-FILE* fp;
-Poll xpoll;
-Poll vpoll;
-int constCount = 0;
-int ctrlCount = 0;
+int getLabelNumber();
+int codeGenConstantLabel(C_type constantType, void* valuePtr);
+void codeGenGetBoolOfFloat(int boolRegIndex, int floatRegIndex);
+void codeGenPrepareRegister(ProcessorType processorType, int regIndex, int needToBeLoaded, int workRegIndexIfPseudo, char** regName);
+void codeGenSaveToMemoryIfPsuedoRegister(ProcessorType processorType, int regIndex, char* regName);
+void codeGenLogicalInstruction(ProcessorType processorType, char *instruction, int dstRegIndex, int srcReg1Index, int srcReg2Index);
+//reg1 is dst
+void codeGen2RegInstruction(ProcessorType processorType, char* instruction, int reg1Index, int reg2Index);
+//reg1 is dst
+void codeGen3RegInstruction(ProcessorType processorType, char* instruction, int reg1Index, int reg2Index, int reg3Index);
+void codeGen2Reg1ImmInstruction(ProcessorType processorType, char* instruction, int reg1Index, int reg2Index, void* imm);
+int codeGenConvertFromIntToFloat(int intRegIndex);
+int codeGenConvertFromFloatToInt(int floatRegIndex);
+//*************************
 
-void codeGeneration(AST_NODE *root)
+void codeGenProgramNode(AST_NODE *programNode);
+void codeGenGlobalVariable(AST_NODE *varaibleDeclListNode);
+void codeGenFunctionDeclaration(AST_NODE *functionDeclNode);
+void codeGenGeneralNode(AST_NODE* node);
+void codeGenStmtNode(AST_NODE* stmtNode);
+void codeGenBlockNode(AST_NODE* blockNode);
+void codeGenWhileStmt(AST_NODE* whileStmtNode);
+void codeGenForStmt(AST_NODE* forStmtNode);
+void codeGenIfStmt(AST_NODE* ifStmtNode);
+void codeGenReturnStmt(AST_NODE* returnStmtNode);
+void codeGenAssignOrExpr(AST_NODE* testNode);
+void codeGenAssignmentStmt(AST_NODE* assignmentStmtNode);
+void codeGenExprRelatedNode(AST_NODE* exprRelatedNode);
+void codeGenExprNode(AST_NODE* exprNode);
+void codeGenFunctionCall(AST_NODE* functionCallNode);
+void codeGenVariableReference(AST_NODE* idNode);
+void codeGenConstantReference(AST_NODE* constantNode);
+int codeGenCalcArrayElemenetAddress(AST_NODE* idNode);
+
+int getLabelNumber()
 {
-	fp = fopen("output.s", "w");
-	initPoll(&xpoll);
-	initPoll(&vpoll);
-    CG_processProgramNode(root);
-	fclose(fp);
-    return;
+	static int labelNumber = 0;
+	return labelNumber++;
 }
 
-void CG_processProgramNode(AST_NODE *programNode)
+
+int codeGenConstantLabel(C_type constantType, void* valuePtr)
 {
-    AST_NODE *traverseDeclaration = programNode->child;
-    while(traverseDeclaration) {
-        if(traverseDeclaration->nodeType == VARIABLE_DECL_LIST_NODE) {
-			int frameSize = 0;
-            CG_processGeneralNode(traverseDeclaration, &frameSize);
-        }
-        else {
-            //function declaration
-			int frameSize = 0;
-            CG_processDeclarationNode(traverseDeclaration, &frameSize);
-        }
+	int labelNumber = getLabelNumber();
+
+	fprintf(g_codeGenOutputFp, ".data\n");
+
+	if(constantType == INTEGERC)
+	{
+		int* val = (int*)valuePtr;
+		fprintf(g_codeGenOutputFp, "_CONSTANT_%d: .word %d\n", labelNumber, *val);
+		fprintf(g_codeGenOutputFp, ".align 3\n");
+	}
+	else if(constantType == FLOATC)
+	{
+		float* val = (float*)valuePtr;
+		fprintf(g_codeGenOutputFp, "_CONSTANT_%d: .float %f\n", labelNumber, *val);
+		fprintf(g_codeGenOutputFp, ".align 3\n");
+	}
+	else if(constantType == STRINGC)
+	{
+		char* val;
+		val = (char *)valuePtr;
+		val[strlen(valuePtr)-1]='\0';
+		fprintf(g_codeGenOutputFp, "_CONSTANT_%d: .ascii %s", labelNumber, val);
+		fprintf(g_codeGenOutputFp, "\\000\"\n");
+		fprintf(g_codeGenOutputFp, ".align 3\n");
+		val[strlen(valuePtr)-1]='"';
+		val[strlen(valuePtr)]='\0';
+	}
+
+	fprintf(g_codeGenOutputFp, ".text\n");
+
+	return labelNumber;
+}
+
+void codeGenSetReg(ProcessorType processorType, char* instruction, int reg1Index, int value){
+	char* reg1Name = NULL;
+	codeGenPrepareRegister(processorType, reg1Index, 0, 0, &reg1Name);
+	fprintf(g_codeGenOutputFp, "%s %s, #%d\n",instruction, reg1Name, value);
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+}
+
+void codeGenSetReg_cond(ProcessorType processorType, char* instruction, int reg1Index, char* cond){
+	char* reg1Name = NULL;
+	codeGenPrepareRegister(processorType, reg1Index, 0, 0, &reg1Name);
+	fprintf(g_codeGenOutputFp, "%s %s, %s\n",instruction, reg1Name, cond);
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+}
+
+
+void codeGenPrepareRegister_64(ProcessorType processorType, int regIndex, int needToBeLoaded, int workRegIndexIfPseudo, char** regName)
+{
+	int realRegisterCount = (processorType == INT_REG) ? INT_REGISTER_COUNT : FLOAT_REGISTER_COUNT;
+	char** realRegisterName = (processorType == INT_REG) ? intRegisterName_64 : floatRegisterName;
+	char** workRegisterName = (processorType == INT_REG) ? intWorkRegisterName_64 : floatWorkRegisterName;
+	char* loadInstruction = (processorType == INT_REG) ? "ldr" : "ldr";
+
+	if(regIndex >= realRegisterCount)
+	{
+		//pseudo register
+		int pseudoIndex = regIndex - realRegisterCount;
+		*regName = workRegisterName[workRegIndexIfPseudo];
+		if(needToBeLoaded)
+		{
+			fprintf(g_codeGenOutputFp, "%s %s, [x29, #%d]\n", loadInstruction, *regName, getPseudoRegisterCorrespondingOffset(pseudoIndex));
+		}
+	}
+	else
+	{
+		*regName = realRegisterName[regIndex];
+		g_intRegisterTable.is64[regIndex]=1;
+	}
+}
+
+
+
+
+
+
+void codeGenGetBoolOfFloat(int boolRegIndex, int floatRegIndex)
+{
+
+	int zero = 0x0;
+	int constantZeroLabelNumber = codeGenConstantLabel(INTEGERC, &zero);
+	char* boolRegName = NULL;
+	codeGenPrepareRegister(INT_REG, boolRegIndex, 0, 0, &boolRegName);
+
+	char* tmpZeroRegName = intWorkRegisterName[0];
+	fprintf(g_codeGenOutputFp, "ldr %s, =_CONSTANT_%d\n", intWorkRegisterName_64[1], constantZeroLabelNumber);
+	fprintf(g_codeGenOutputFp, "ldr %s, [%s,#0]\n", tmpZeroRegName, intWorkRegisterName_64[1]);
+	char* origFloatRegName = NULL;
+	codeGenPrepareRegister(FLOAT_REG, floatRegIndex, 1, 1, &origFloatRegName);
+	fprintf(g_codeGenOutputFp, "str %s, [%s,#0]\n",origFloatRegName , intWorkRegisterName_64[1]);
+	fprintf(g_codeGenOutputFp, "ldr %s, [%s,#0]\n", boolRegName, intWorkRegisterName_64[1]);
+	fprintf(g_codeGenOutputFp, "cmp %s, %s\n",tmpZeroRegName,  boolRegName);
+
+	char* reg1Name = NULL;
+	fprintf(g_codeGenOutputFp, "cset %s, ne\n", boolRegName);
+
+
+	codeGenSaveToMemoryIfPsuedoRegister(INT_REG, boolRegIndex, boolRegName);
+}
+
+
+void codeGenPrepareRegister(ProcessorType processorType, int regIndex, int needToBeLoaded, int workRegIndexIfPseudo, char** regName)
+{
+	int realRegisterCount = (processorType == INT_REG) ? INT_REGISTER_COUNT : FLOAT_REGISTER_COUNT;
+	char** realRegisterName; 
+	char** workRegisterName ;
+	char* loadInstruction = (processorType == INT_REG) ? "ldr" : "ldr";
+
+
+	if(regIndex >= realRegisterCount)
+	{
+		//pseudo register
+		realRegisterName = (processorType == INT_REG) ? intRegisterName : floatRegisterName;
+		workRegisterName = (processorType == INT_REG) ? intWorkRegisterName : floatWorkRegisterName;
+		int pseudoIndex = regIndex - realRegisterCount;
+		*regName = workRegisterName[workRegIndexIfPseudo];
+		if(needToBeLoaded)
+		{
+			fprintf(g_codeGenOutputFp, "%s %s, [x29, #%d]\n", loadInstruction, *regName, getPseudoRegisterCorrespondingOffset(pseudoIndex));
+		}
+	}
+	else
+	{	if(processorType == INT_REG){
+						    if(g_intRegisterTable.is64[regIndex]==1){
+							    *regName = intRegisterName_64[regIndex];
+						    }
+						    else{
+							    *regName = intRegisterName[regIndex];
+						    }
+
+					    }
+	else{
+		realRegisterName =floatRegisterName;
+		workRegisterName =floatWorkRegisterName;
+		*regName = realRegisterName[regIndex];
+	}
+	}
+}
+
+
+void codeGenSaveToMemoryIfPsuedoRegister(ProcessorType processorType, int regIndex, char* regName)
+{
+	int realRegisterCount = (processorType == INT_REG) ? INT_REGISTER_COUNT : FLOAT_REGISTER_COUNT;
+	char* saveInstruction = (processorType == INT_REG) ? "str" : "str";
+
+	if(regIndex >= realRegisterCount)
+	{
+		//pseudo register
+		int pseudoIndex = regIndex - realRegisterCount;
+		fprintf(g_codeGenOutputFp, "%s %s, [x29, #%d]\n", saveInstruction, regName, getPseudoRegisterCorrespondingOffset(pseudoIndex));
+	}
+}
+
+
+
+
+
+
+
+void codeGen1Reg1ImmInstruction(ProcessorType processorType, char* instruction, int reg1Index, int *value){
+	char* reg1Name = NULL;
+	codeGenPrepareRegister(processorType, reg1Index, 0, 0, &reg1Name);
+
+
+	if(processorType == INT_REG){
+		fprintf(g_codeGenOutputFp, "%s %s, #%d\n", instruction, reg1Name, *((int *)value) );
+	}
+
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+}
+
+
+void codeGenLogicalInstruction(ProcessorType processorType, char *instruction, int dstRegIndex, int srcReg1Index, int srcReg2Index)
+{
+	int boolReg1Index = -1;
+	int boolReg2Index = -1;
+
+	if(processorType == FLOAT_REG)
+	{
+		boolReg1Index = getRegister(INT_REG);
+		boolReg2Index = getRegister(INT_REG);
+		codeGenGetBoolOfFloat(boolReg1Index, srcReg1Index);
+		codeGenGetBoolOfFloat(boolReg2Index, srcReg2Index);
+	}
+	else if(processorType == INT_REG)
+	{
+		int zero = 0;
+		boolReg1Index = srcReg1Index;
+		boolReg2Index = srcReg2Index;
+		codeGen1Reg1ImmInstruction(INT_REG, "cmp", srcReg1Index, &zero);
+		codeGenSetReg_cond(INT_REG, "cset",srcReg1Index, "ne");
+		codeGen1Reg1ImmInstruction(INT_REG, "cmp", srcReg2Index, &zero);
+		codeGenSetReg_cond(INT_REG, "cset",srcReg2Index, "ne");
+
+	}
+
+	codeGen3RegInstruction(INT_REG, instruction, dstRegIndex, boolReg1Index, boolReg2Index);
+
+	if(processorType == FLOAT_REG)
+	{
+		freeRegister(INT_REG, boolReg1Index);
+		freeRegister(INT_REG, boolReg2Index);
+	}
+}
+
+
+void codeGenCmp0Instruction(ProcessorType processorType, char* instruction, int reg1Index, int imm){
+
+
+	char* reg1Name = NULL;
+	codeGenPrepareRegister(processorType, reg1Index, 0, 0, &reg1Name);
+	fprintf(g_codeGenOutputFp, "%s %s, #%d\n", instruction, reg1Name, imm);
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+
+}
+
+
+void codeGen2RegInstruction(ProcessorType processorType, char* instruction, int reg1Index, int reg2Index)
+{
+	char* reg1Name = NULL;
+	codeGenPrepareRegister(processorType, reg1Index, 0, 0, &reg1Name);
+
+	char* reg2Name = NULL;
+	codeGenPrepareRegister(processorType, reg2Index, 1, 1, &reg2Name);
+
+	fprintf(g_codeGenOutputFp, "%s %s, %s\n", instruction, reg1Name, reg2Name);
+
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+}
+
+void codeGen3RegInstruction(ProcessorType processorType, char* instruction, int reg1Index, int reg2Index, int reg3Index)
+{
+	char* reg1Name = NULL;
+	codeGenPrepareRegister(processorType, reg1Index, 0, 0, &reg1Name);
+
+	char* reg2Name = NULL;
+	codeGenPrepareRegister(processorType, reg2Index, 1, 0, &reg2Name);
+
+	char* reg3Name = NULL;
+	codeGenPrepareRegister(processorType, reg3Index, 1, 1, &reg3Name);
+
+	fprintf(g_codeGenOutputFp, "%s %s, %s, %s\n", instruction, reg1Name, reg2Name, reg3Name);
+
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+}
+
+void codeGen2Reg1ImmInstruction_64(ProcessorType processorType, char* instruction, int reg1Index, int reg2Index, void* imm)
+{
+	char* reg1Name = NULL;
+	codeGenPrepareRegister_64(processorType, reg1Index, 0, 0, &reg1Name);
+
+	char* reg2Name = NULL;
+	codeGenPrepareRegister_64(processorType, reg2Index, 1, 0, &reg2Name);
+
+	if(processorType == INT_REG)
+	{
+		int* val = (int*)imm;
+		fprintf(g_codeGenOutputFp, "%s %s, %s, #%d\n", instruction, reg1Name, reg2Name, *val);
+	}
+	else if(processorType == FLOAT_REG)
+	{
+		float* val = (float*)imm;
+		fprintf(g_codeGenOutputFp, "%s %s, %s, %f\n", instruction, reg1Name, reg2Name, *val);
+	}
+
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+}
+
+
+
+
+
+
+void codeGen2Reg1ImmInstruction(ProcessorType processorType, char* instruction, int reg1Index, int reg2Index, void* imm)
+{
+	char* reg1Name = NULL;
+	codeGenPrepareRegister(processorType, reg1Index, 0, 0, &reg1Name);
+
+	char* reg2Name = NULL;
+	codeGenPrepareRegister(processorType, reg2Index, 1, 0, &reg2Name);
+
+	if(processorType == INT_REG)
+	{
+		int* val = (int*)imm;
+		fprintf(g_codeGenOutputFp, "%s %s, %s, #%d\n", instruction, reg1Name, reg2Name, *val);
+	}
+	else if(processorType == FLOAT_REG)
+	{
+		float* val = (float*)imm;
+		fprintf(g_codeGenOutputFp, "%s %s, %s, %f\n", instruction, reg1Name, reg2Name, *val);
+	}
+
+	codeGenSaveToMemoryIfPsuedoRegister(processorType, reg1Index, reg1Name);
+}
+
+
+int codeGenConvertFromIntToFloat(int intRegIndex)
+{
+	/*TODO*/
+	int floatRegisterIndex;
+
+	char* regName = NULL;
+	codeGenPrepareRegister_64(INT_REG, intRegIndex, 1, 0, &regName);
+	floatRegisterIndex = getRegister(FLOAT_REG);
+	char* regNameConverted = NULL;
+	codeGenPrepareRegister(FLOAT_REG, floatRegisterIndex, 0, 0, &regNameConverted);
+	fprintf(g_codeGenOutputFp, "scvtf %s, %s\n", regNameConverted, regName);
+	codeGenSaveToMemoryIfPsuedoRegister(FLOAT_REG, floatRegisterIndex, regNameConverted);
+
+	freeRegister(INT_REG, intRegIndex);
+	return floatRegisterIndex;
+}
+
+
+int codeGenConvertFromFloatToInt(int floatRegIndex)
+{
+	/*TODO*/
+	int intRegisterIndex;
+
+	char* regName = NULL;
+	codeGenPrepareRegister(FLOAT_REG, floatRegIndex, 1, 0, &regName);
+	intRegisterIndex = getRegister(INT_REG);
+	char* regNameConverted = NULL;
+	codeGenPrepareRegister_64(INT_REG, intRegisterIndex, 0, 0, &regNameConverted);
+	fprintf(g_codeGenOutputFp, "fcvtzs %s, %s\n", regNameConverted, regName);
+	codeGenSaveToMemoryIfPsuedoRegister(INT_REG, intRegisterIndex, regNameConverted);
+	
+	freeRegister(FLOAT_REG, floatRegIndex);
+	return intRegisterIndex;
+}
+
+
+void codeGenerate(AST_NODE *root)
+{
+	char* outputfileName = "output.s";
+	g_codeGenOutputFp = fopen(outputfileName, "w");
+	if(!g_codeGenOutputFp)
+	{
+		printf("Cannot open file \"%s\"", outputfileName);
+		exit(EXIT_FAILURE);
+	}
+
+	codeGenProgramNode(root);
+}
+
+
+void codeGenProgramNode(AST_NODE *programNode)
+{
+	AST_NODE *traverseDeclaration = programNode->child;
+	while(traverseDeclaration)
+	{
+		if(traverseDeclaration->nodeType == VARIABLE_DECL_LIST_NODE)
+		{
+			fprintf(g_codeGenOutputFp, ".data\n");
+			codeGenGlobalVariable(traverseDeclaration);
+			fprintf(g_codeGenOutputFp, ".text\n");
+		}
+		else if(traverseDeclaration->nodeType == DECLARATION_NODE)
+		{
+			codeGenFunctionDeclaration(traverseDeclaration);
+		}
 		traverseDeclaration = traverseDeclaration->rightSibling;
-    }
-    return;
+	}
+	return;
 }
 
-void CG_processGeneralNode(AST_NODE *node, int* frameSize)
+
+void codeGenGlobalVariable(AST_NODE* varaibleDeclListNode)
 {
-    AST_NODE *traverseChildren = node->child;
-    switch(node->nodeType) {
+	AST_NODE *traverseDeclaration = varaibleDeclListNode->child;
+	while(traverseDeclaration)
+	{
+		if(traverseDeclaration->semantic_value.declSemanticValue.kind == VARIABLE_DECL)
+		{
+			AST_NODE *idNode = traverseDeclaration->child->rightSibling;
+			while(idNode)
+			{
+				SymbolTableEntry* idSymbolTableEntry = idNode->semantic_value.identifierSemanticValue.symbolTableEntry;
+				TypeDescriptor* idTypeDescriptor = idSymbolTableEntry->attribute->attr.typeDescriptor;
+				if(idTypeDescriptor->kind == SCALAR_TYPE_DESCRIPTOR)
+				{
+					if(idTypeDescriptor->properties.dataType == INT_TYPE)
+					{
+						if(idNode->semantic_value.identifierSemanticValue.kind == WITH_INIT_ID)
+							fprintf(g_codeGenOutputFp, "_g_%s: .word %d\n", idSymbolTableEntry->name, idNode->child->semantic_value.const1->const_u.intval);
+						else
+							fprintf(g_codeGenOutputFp, "_g_%s: .word 0\n", idSymbolTableEntry->name);
+					}
+					else if(idTypeDescriptor->properties.dataType == FLOAT_TYPE)
+					{
+
+						if(idNode->semantic_value.identifierSemanticValue.kind == WITH_INIT_ID)
+							fprintf(g_codeGenOutputFp, "_g_%s: .float %f\n", idSymbolTableEntry->name, idNode->child->semantic_value.const1->const_u.fval);
+						else
+							fprintf(g_codeGenOutputFp, "_g_%s: .float 0.0\n", idSymbolTableEntry->name);
+					}
+				}
+				else if(idTypeDescriptor->kind == ARRAY_TYPE_DESCRIPTOR)
+				{
+					int variableSize = getVariableSize(idTypeDescriptor);
+					fprintf(g_codeGenOutputFp, "_g_%s: .space %d\n", idSymbolTableEntry->name, variableSize);
+				}
+				idNode = idNode->rightSibling;
+			}
+		}
+		traverseDeclaration = traverseDeclaration->rightSibling;
+	}
+	return;
+}
+
+
+void codeGenFunctionDeclaration(AST_NODE *functionDeclNode)
+{
+	AST_NODE* functionIdNode = functionDeclNode->child->rightSibling;
+	int i;
+
+	g_currentFunctionName = functionIdNode->semantic_value.identifierSemanticValue.identifierName;
+
+	fprintf(g_codeGenOutputFp, ".text\n");
+	if (strcmp(functionIdNode->semantic_value.identifierSemanticValue.identifierName, "main") != 0) {
+		fprintf(g_codeGenOutputFp, "_start_%s:\n", functionIdNode->semantic_value.identifierSemanticValue.identifierName);
+	} else {
+		fprintf(g_codeGenOutputFp, "%s:\n", functionIdNode->semantic_value.identifierSemanticValue.identifierName);
+	}
+
+	//prologue
+	fprintf(g_codeGenOutputFp, "str x30, [sp, #0]\n");
+	fprintf(g_codeGenOutputFp, "str x29, [sp, #-8]\n");
+	fprintf(g_codeGenOutputFp, "add x29, sp, #-8\n");
+	fprintf(g_codeGenOutputFp, "add sp, sp, #-16\n");
+	fprintf(g_codeGenOutputFp, "ldr x30, =_frameSize_%s\n", functionIdNode->semantic_value.identifierSemanticValue.identifierName);
+	fprintf(g_codeGenOutputFp, "ldr x30, [x30, #0]\n");
+	fprintf(g_codeGenOutputFp, "sub sp, sp, w30\n");
+	printStoreRegister(g_codeGenOutputFp);
+
+	resetRegisterTable(functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);
+
+printf("fn total offsetInAR:%d\n", functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);
+
+	AST_NODE* blockNode = functionIdNode->rightSibling->rightSibling;
+	AST_NODE *traverseListNode = blockNode->child;
+	while(traverseListNode)
+	{
+		codeGenGeneralNode(traverseListNode);
+		traverseListNode = traverseListNode->rightSibling;
+	}
+
+	//epilogue
+	fprintf(g_codeGenOutputFp, "_end_%s:\n", g_currentFunctionName);
+	printRestoreRegister(g_codeGenOutputFp);
+	fprintf(g_codeGenOutputFp, "ldr x30, [x29, #8]\n");
+	fprintf(g_codeGenOutputFp, "mov sp, x29\n");
+	fprintf(g_codeGenOutputFp, "add sp, sp, #8\n");
+	fprintf(g_codeGenOutputFp, "ldr x29, [x29,#0]\n");
+	if (strcmp(functionIdNode->semantic_value.identifierSemanticValue.identifierName, "main") == 0)
+	{
+	}
+	else
+	{
+		fprintf(g_codeGenOutputFp, "RET x30\n");
+	}
+	fprintf(g_codeGenOutputFp, ".data\n");
+	int frameSize = abs(functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR) + 
+		(INT_REGISTER_COUNT + INT_WORK_REGISTER_COUNT + FLOAT_REGISTER_COUNT + FLOAT_WORK_REGISTER_COUNT) * 4 +
+		g_pseudoRegisterTable.isAllocatedVector->size * 4;
+	
+//printf("framesize_origin:%d, ",frameSize);
+	while(frameSize%8 != 0){
+		frameSize=frameSize+4;	
+	}
+//printf("Callee used:%d\n", (INT_REGISTER_COUNT+INT_WORK_REGISTER_COUNT)*4);
+
+	fprintf(g_codeGenOutputFp, "_frameSize_%s: .word %d\n", functionIdNode->semantic_value.identifierSemanticValue.identifierName, frameSize+(INT_REGISTER_COUNT+INT_WORK_REGISTER_COUNT)*4);
+	return;
+}
+
+
+void codeGenBlockNode(AST_NODE* blockNode)
+{
+	AST_NODE *traverseListNode = blockNode->child;
+	while(traverseListNode)
+	{
+		codeGenGeneralNode(traverseListNode);
+		traverseListNode = traverseListNode->rightSibling;
+	}
+}
+
+
+void codeGenExprNode(AST_NODE* exprNode)
+{
+	if(exprNode->semantic_value.exprSemanticValue.kind == BINARY_OPERATION)
+	{
+		AST_NODE* leftOp = exprNode->child;
+		AST_NODE* rightOp = leftOp->rightSibling;
+		codeGenExprRelatedNode(leftOp);
+		codeGenExprRelatedNode(rightOp);
+		if(leftOp->dataType == FLOAT_TYPE || rightOp->dataType == FLOAT_TYPE)
+		{
+			if(leftOp->dataType == INT_TYPE)
+			{
+				leftOp->registerIndex = codeGenConvertFromIntToFloat(leftOp->registerIndex);
+			}
+			if(rightOp->dataType == INT_TYPE)
+			{
+				rightOp->registerIndex = codeGenConvertFromIntToFloat(rightOp->registerIndex);
+			}
+
+			switch(exprNode->semantic_value.exprSemanticValue.op.binaryOp)
+			{
+				case BINARY_OP_ADD:
+					exprNode->registerIndex = leftOp->registerIndex;
+					codeGen3RegInstruction(FLOAT_REG, "fadd", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_SUB:
+					exprNode->registerIndex = leftOp->registerIndex;
+					codeGen3RegInstruction(FLOAT_REG, "fsub", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_MUL:
+					exprNode->registerIndex = leftOp->registerIndex;
+					codeGen3RegInstruction(FLOAT_REG, "fmul", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_DIV:
+					exprNode->registerIndex = leftOp->registerIndex;
+					codeGen3RegInstruction(FLOAT_REG, "fdiv", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_EQ:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGen2RegInstruction(FLOAT_REG, "cmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "eq");
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				case BINARY_OP_GE:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGen2RegInstruction(FLOAT_REG, "fcmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "ge");
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				case BINARY_OP_LE:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGen2RegInstruction(FLOAT_REG, "fcmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "le");
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				case BINARY_OP_NE:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGen2RegInstruction(FLOAT_REG, "fcmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "ne");
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				case BINARY_OP_GT:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGen2RegInstruction(FLOAT_REG, "fcmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "ge");
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				case BINARY_OP_LT:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGen2RegInstruction(FLOAT_REG, "fcmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "lt");
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				case BINARY_OP_AND:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGenLogicalInstruction(FLOAT_REG, "and", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				case BINARY_OP_OR:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGenLogicalInstruction(FLOAT_REG, "orr", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					freeRegister(FLOAT_REG, leftOp->registerIndex);
+					break;
+				default:
+					printf("Unhandled case in void evaluateExprValue(AST_NODE* exprNode)\n");
+					break;
+			}
+
+			freeRegister(FLOAT_REG, rightOp->registerIndex);
+		}
+		else if(exprNode->dataType == INT_TYPE)
+		{
+			exprNode->registerIndex = leftOp->registerIndex;
+			switch(exprNode->semantic_value.exprSemanticValue.op.binaryOp)
+			{
+				case BINARY_OP_ADD:
+					codeGen3RegInstruction(INT_REG, "add", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_SUB:
+					codeGen3RegInstruction(INT_REG, "sub", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_MUL:
+					codeGen3RegInstruction(INT_REG, "mul", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_DIV:
+					codeGen3RegInstruction(INT_REG, "sdiv", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_EQ:
+					codeGen2RegInstruction(INT_REG, "cmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "eq");
+					break;
+				case BINARY_OP_GE:
+					codeGen2RegInstruction(INT_REG, "cmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "ge");
+					break;
+				case BINARY_OP_LE:
+					codeGen2RegInstruction(INT_REG, "cmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "le");
+
+					break;
+				case BINARY_OP_NE:
+					codeGen2RegInstruction(INT_REG, "cmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "ne");
+					break;
+				case BINARY_OP_GT:
+					codeGen2RegInstruction(INT_REG, "cmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "gt");
+
+
+					break;
+				case BINARY_OP_LT:
+					codeGen2RegInstruction(INT_REG, "cmp", leftOp->registerIndex, rightOp->registerIndex);
+					codeGenSetReg_cond(INT_REG, "cset",exprNode->registerIndex, "lt");
+					break;
+				case BINARY_OP_AND:
+					codeGenLogicalInstruction(INT_REG, "and", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				case BINARY_OP_OR:
+					codeGenLogicalInstruction(INT_REG, "orr", exprNode->registerIndex, leftOp->registerIndex, rightOp->registerIndex);
+					break;
+				default:
+					printf("Unhandled case in void evaluateExprValue(AST_NODE* exprNode)\n");
+					break;
+			}
+
+			freeRegister(INT_REG, rightOp->registerIndex);
+		}
+	}//endif BINARY_OPERATION
+	else if(exprNode->semantic_value.exprSemanticValue.kind == UNARY_OPERATION)
+	{
+		int tmpZero = 0;
+		AST_NODE* operand = exprNode->child;
+		codeGenExprRelatedNode(operand);
+		if(operand->dataType == FLOAT_TYPE)
+		{
+			switch(exprNode->semantic_value.exprSemanticValue.op.unaryOp)
+			{
+				case UNARY_OP_POSITIVE:
+					exprNode->registerIndex = operand->registerIndex;
+					break;
+				case UNARY_OP_NEGATIVE:
+					exprNode->registerIndex = operand->registerIndex;
+					codeGen2RegInstruction(FLOAT_REG, "fneg", exprNode->registerIndex, exprNode->registerIndex);
+					break;
+				case UNARY_OP_LOGICAL_NEGATION:
+					exprNode->registerIndex = getRegister(INT_REG);
+					codeGenGetBoolOfFloat(exprNode->registerIndex, operand->registerIndex);
+					freeRegister(FLOAT_REG, operand->registerIndex);
+					break;
+				default:
+					printf("Unhandled case in void evaluateExprValue(AST_NODE* exprNode)\n");
+					break;
+			}
+		}
+		else if(operand->dataType == INT_TYPE)
+		{
+			switch(exprNode->semantic_value.exprSemanticValue.op.unaryOp)
+			{
+				case UNARY_OP_POSITIVE:
+					exprNode->registerIndex = operand->registerIndex;
+					break;
+				case UNARY_OP_NEGATIVE:
+					exprNode->registerIndex = operand->registerIndex;
+					codeGen2RegInstruction(INT_REG, "neg", exprNode->registerIndex, exprNode->registerIndex);
+					break;
+				case UNARY_OP_LOGICAL_NEGATION:
+					exprNode->registerIndex = operand->registerIndex;
+					codeGenCmp0Instruction(INT_REG,"cmp",exprNode->registerIndex,0);
+					codeGenSetReg(INT_REG, "mov",exprNode->registerIndex, 0);
+					codeGenSetReg(INT_REG, "moveq",exprNode->registerIndex, 1);
+					break;
+				default:
+					printf("Unhandled case in void evaluateExprValue(AST_NODE* exprNode)\n");
+					break;
+			}
+		}
+	}
+}
+
+
+void codeGenFunctionCall(AST_NODE* functionCallNode)
+{
+	AST_NODE* functionIdNode = functionCallNode->child;
+	AST_NODE* parameterList = functionIdNode->rightSibling;
+	
+	//write function
+	if(strcmp(functionIdNode->semantic_value.identifierSemanticValue.identifierName, "write") == 0)
+	{
+		AST_NODE* firstParameter = parameterList->child;
+		codeGenExprRelatedNode(firstParameter);
+		char* parameterRegName = NULL;
+		switch(firstParameter->dataType)
+		{
+			case INT_TYPE:
+				codeGenPrepareRegister(INT_REG, firstParameter->registerIndex, 1, 0, &parameterRegName);
+				fprintf(g_codeGenOutputFp, "mov w0, %s\n", parameterRegName);
+				fprintf(g_codeGenOutputFp, "bl _write_int\n");
+				freeRegister(INT_REG, firstParameter->registerIndex);
+				break;
+			case FLOAT_TYPE:
+				codeGenPrepareRegister(FLOAT_REG, firstParameter->registerIndex, 1, 0, &parameterRegName);
+				fprintf(g_codeGenOutputFp, "fmov s0, %s\n", parameterRegName);
+				fprintf(g_codeGenOutputFp, "bl _write_float\n");
+				freeRegister(FLOAT_REG, firstParameter->registerIndex);
+				break;
+			case CONST_STRING_TYPE:
+				codeGenPrepareRegister(INT_REG, firstParameter->registerIndex, 1, 0, &parameterRegName);
+				fprintf(g_codeGenOutputFp, "mov x0, %s\n", parameterRegName);
+				fprintf(g_codeGenOutputFp, "bl _write_str\n");
+				freeRegister(INT_REG, firstParameter->registerIndex);
+				break;
+			default:
+				printf("Unhandled case in void codeGenFunctionCall(AST_NODE* functionCallNode)\n");
+				printf("firstParameter->registerIndex was not free\n");
+				break;
+		}
+		return;
+	}
+
+
+	if(strcmp(functionIdNode->semantic_value.identifierSemanticValue.identifierName, "read") == 0)
+	{
+		fprintf(g_codeGenOutputFp, "bl _read_int\n");
+	}
+	else if(strcmp(functionIdNode->semantic_value.identifierSemanticValue.identifierName, "fread") == 0)
+	{
+		fprintf(g_codeGenOutputFp, "bl _read_float\n");
+	}
+	else
+	{
+		// noraml function calls
+		if (strcmp(functionIdNode->semantic_value.identifierSemanticValue.identifierName, "main") != 0) {
+		
+
+			//caller save
+			int paramOffset = functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.functionSignature->paramOffset;
+			fprintf(g_codeGenOutputFp, "# caller save\n");
+			fprintf(g_codeGenOutputFp, "sub sp, sp, %d\n", paramOffset );
+
+			// int paramSize = 0;
+			AST_NODE* actualParameter = parameterList->child;
+		    Parameter* formalParameter = functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.functionSignature->parameterList;
+			while(actualParameter && formalParameter){
+			 	codeGenExprRelatedNode(actualParameter);
+			 	//fprintf(g_codeGenOutputFp, "str %s, [x29, #%d]\n", floatWorkRegisterName[index], formalParameter->offsetInAR);
+
+				char* paramValRegName = NULL;
+				if (actualParameter->dataType == INT_TYPE){
+					codeGenPrepareRegister(INT_REG, actualParameter->registerIndex, 1, 0, &paramValRegName);
+					fprintf(g_codeGenOutputFp, "str %s, [sp, #%d]\n", paramValRegName, formalParameter->offsetInAR-8);
+					//fprintf(g_codeGenOutputFp, "mov w0, %s\n", paramValRegName);
+					freeRegister(INT_REG, actualParameter->registerIndex);
+				}else if(actualParameter->dataType == FLOAT_TYPE){
+					codeGenPrepareRegister(FLOAT_REG, actualParameter->registerIndex, 1, 0, &paramValRegName);
+					fprintf(g_codeGenOutputFp, "str %s, [sp, #%d]\n", paramValRegName, formalParameter->offsetInAR-8);
+					//fprintf(g_codeGenOutputFp, "fmov s0, %s\n", paramValRegName);
+					freeRegister(FLOAT_REG, actualParameter->registerIndex);
+				}
+			
+			 	formalParameter = formalParameter->next;
+			 	actualParameter = actualParameter->rightSibling;
+			 }
+
+			//go to function
+			fprintf(g_codeGenOutputFp, "bl _start_%s\n", functionIdNode->semantic_value.identifierSemanticValue.identifierName);
+
+			//caller restore
+			fprintf(g_codeGenOutputFp, "# caller restore\n");
+			fprintf(g_codeGenOutputFp, "add sp, sp, %d\n", paramOffset); 
+
+
+		} else {
+			fprintf(g_codeGenOutputFp, "bl %s\n", functionIdNode->semantic_value.identifierSemanticValue.identifierName);
+		}
+	}
+
+
+
+	//save return to register 
+	if (functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry) {
+		if(functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.functionSignature->returnType == INT_TYPE)
+		{
+			functionCallNode->registerIndex = getRegister(INT_REG);
+			char* returnIntRegName = NULL;
+			codeGenPrepareRegister(INT_REG, functionCallNode->registerIndex, 0, 0, &returnIntRegName);
+
+			fprintf(g_codeGenOutputFp, "mov %s, w0\n", returnIntRegName);
+
+			codeGenSaveToMemoryIfPsuedoRegister(INT_REG, functionCallNode->registerIndex, returnIntRegName);
+		}
+		else if(functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.functionSignature->returnType == FLOAT_TYPE)
+		{
+			functionCallNode->registerIndex = getRegister(FLOAT_REG);
+			char* returnfloatRegName = NULL;
+			codeGenPrepareRegister(FLOAT_REG, functionCallNode->registerIndex, 0, 0, &returnfloatRegName);
+
+			fprintf(g_codeGenOutputFp, "fmov %s, s0\n", returnfloatRegName);
+
+			codeGenSaveToMemoryIfPsuedoRegister(INT_REG, functionCallNode->registerIndex, returnfloatRegName);
+		}
+	}
+}
+
+
+int codeGenCalcArrayElemenetAddress(AST_NODE* idNode)
+{
+	AST_NODE* traverseDim = idNode->child;
+	int* sizeInEachDimension = idNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor->properties.arrayProperties.sizeInEachDimension;
+
+	codeGenExprRelatedNode(traverseDim);
+	int linearIdxRegisterIndex = traverseDim->registerIndex;
+	traverseDim = traverseDim->rightSibling;
+
+	int dimIndex = 1;
+	/*TODO multiple dimensions
+	  while(traverseDim)
+	  {
+	  }
+	 */
+
+	int shiftLeftTwoBits = 2;
+	codeGen2Reg1ImmInstruction_64(INT_REG, "lsl", linearIdxRegisterIndex, linearIdxRegisterIndex, &shiftLeftTwoBits);
+
+	char* linearOffsetRegName = NULL;
+	if(!isGlobalVariable(idNode->semantic_value.identifierSemanticValue.symbolTableEntry))
+	{
+		int baseOffset = idNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR;
+		codeGen2Reg1ImmInstruction_64(INT_REG, "add", linearIdxRegisterIndex, linearIdxRegisterIndex, &baseOffset);
+		codeGenPrepareRegister_64(INT_REG, linearIdxRegisterIndex, 1, 0, &linearOffsetRegName);
+		fprintf(g_codeGenOutputFp, "add %s, %s, x29\n", linearOffsetRegName, linearOffsetRegName);
+	}
+	else
+	{
+		fprintf(g_codeGenOutputFp, "ldr %s,= _g_%s\n", intWorkRegisterName_64[0], idNode->semantic_value.identifierSemanticValue.identifierName);
+		codeGenPrepareRegister_64(INT_REG, linearIdxRegisterIndex, 1, 1, &linearOffsetRegName);
+		fprintf(g_codeGenOutputFp, "add %s, %s, %s\n", linearOffsetRegName, linearOffsetRegName, intWorkRegisterName[0]);
+	}
+
+	codeGenSaveToMemoryIfPsuedoRegister(INT_REG, linearIdxRegisterIndex, linearOffsetRegName);
+
+	return linearIdxRegisterIndex;
+}
+
+void codeGenVariableReference(AST_NODE* idNode)
+{
+	SymbolAttribute *idAttribute = idNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute;
+	if(idNode->semantic_value.identifierSemanticValue.kind == NORMAL_ID)
+	{
+		if(idNode->dataType == INT_TYPE)
+		{
+			idNode->registerIndex = getRegister(INT_REG);
+			char* loadRegName = NULL;
+			if(!isGlobalVariable(idNode->semantic_value.identifierSemanticValue.symbolTableEntry))
+			{
+				codeGenPrepareRegister(INT_REG, idNode->registerIndex, 0, 0, &loadRegName);
+				fprintf(g_codeGenOutputFp, "ldr %s, [x29, #%d]\n", loadRegName, idAttribute->offsetInAR);
+			}
+			else
+			{
+				fprintf(g_codeGenOutputFp, "ldr %s, =_g_%s\n", intWorkRegisterName_64[0], idNode->semantic_value.identifierSemanticValue.identifierName);
+				codeGenPrepareRegister(INT_REG, idNode->registerIndex, 0, 1, &loadRegName);
+				fprintf(g_codeGenOutputFp, "ldr %s, [%s,#0]\n", loadRegName, intWorkRegisterName_64[0]);
+			}
+			codeGenSaveToMemoryIfPsuedoRegister(INT_REG, idNode->registerIndex, loadRegName);
+		}
+		else if(idNode->dataType == FLOAT_TYPE)
+		{
+			idNode->registerIndex = getRegister(FLOAT_REG);
+			
+			char* loadRegName = NULL;
+			if(!isGlobalVariable(idNode->semantic_value.identifierSemanticValue.symbolTableEntry))
+			{
+				codeGenPrepareRegister(FLOAT_REG, idNode->registerIndex, 0, 0, &loadRegName);
+				fprintf(g_codeGenOutputFp, "ldr %s, [x29, #%d]\n", loadRegName, idAttribute->offsetInAR);
+			}
+			else
+			{
+				fprintf(g_codeGenOutputFp, "ldr %s, =_g_%s\n", intWorkRegisterName_64[0], idNode->semantic_value.identifierSemanticValue.identifierName);
+				codeGenPrepareRegister(FLOAT_REG, idNode->registerIndex, 0, 0, &loadRegName);
+				fprintf(g_codeGenOutputFp, "ldr %s, [%s, #0]\n", loadRegName, intWorkRegisterName_64[0]);
+			}
+			codeGenSaveToMemoryIfPsuedoRegister(FLOAT_REG, idNode->registerIndex, loadRegName);
+		}
+	}
+	else if(idNode->semantic_value.identifierSemanticValue.kind == ARRAY_ID)
+	{
+		if(idNode->dataType == INT_TYPE || idNode->dataType == FLOAT_TYPE)
+		{
+			int elementAddressRegIndex = codeGenCalcArrayElemenetAddress(idNode);
+			char* elementAddressRegName = NULL;
+			codeGenPrepareRegister_64(INT_REG, elementAddressRegIndex, 1, 0, &elementAddressRegName);
+
+			if(idNode->dataType == INT_TYPE)
+			{
+				char* dstRegName = NULL;
+				idNode->registerIndex = getRegister(INT_REG);
+				codeGenPrepareRegister(INT_REG, idNode->registerIndex, 0, 0, &dstRegName);
+				fprintf(g_codeGenOutputFp, "ldr %s, [%s, #0]\n",dstRegName , elementAddressRegName);
+				freeRegister(INT_REG, elementAddressRegIndex);
+
+				codeGenSaveToMemoryIfPsuedoRegister(INT_REG, idNode->registerIndex, dstRegName);
+			}
+			else if(idNode->dataType == FLOAT_TYPE)
+			{
+				char* dstRegName = NULL;
+				idNode->registerIndex = getRegister(FLOAT_REG);
+				codeGenPrepareRegister(FLOAT_REG, idNode->registerIndex, 0, 0, &dstRegName);
+
+				char* elementAddressRegName = NULL;
+				codeGenPrepareRegister(INT_REG, elementAddressRegIndex, 1, 0, &elementAddressRegName);
+
+				fprintf(g_codeGenOutputFp, "ldr %s, [%s, #0]\n", dstRegName, elementAddressRegName);
+				codeGenSaveToMemoryIfPsuedoRegister(FLOAT_REG, idNode->registerIndex, dstRegName);
+
+				freeRegister(INT_REG, elementAddressRegIndex);
+			}
+		}
+	}
+}
+
+void codeGenConstantReference(AST_NODE* constantNode)
+{
+	C_type cType = constantNode->semantic_value.const1->const_type;
+	if(cType == INTEGERC)
+	{
+		int tmpInt = constantNode->semantic_value.const1->const_u.intval;
+		int constantLabelNumber = codeGenConstantLabel(INTEGERC, &tmpInt);
+		constantNode->registerIndex = getRegister(INT_REG);
+		char* regName = NULL;
+		codeGenPrepareRegister(INT_REG, constantNode->registerIndex, 0, 0, &regName);
+		fprintf(g_codeGenOutputFp, "ldr %s, _CONSTANT_%d\n", regName, constantLabelNumber);
+		codeGenSaveToMemoryIfPsuedoRegister(INT_REG, constantNode->registerIndex, regName);
+// printRegs();
+	}
+	else if(cType == FLOATC)
+	{
+		float tmpFloat = constantNode->semantic_value.const1->const_u.fval;
+		int constantLabelNumber = codeGenConstantLabel(FLOATC, &tmpFloat);
+		constantNode->registerIndex = getRegister(FLOAT_REG);
+		char* regName = NULL;
+		codeGenPrepareRegister(FLOAT_REG, constantNode->registerIndex, 0, 0, &regName);
+		fprintf(g_codeGenOutputFp, "ldr %s, =_CONSTANT_%d\n", intWorkRegisterName_64[0], constantLabelNumber);
+		fprintf(g_codeGenOutputFp, "ldr %s, [%s, #0]\n", regName, intWorkRegisterName_64[0]);
+		codeGenSaveToMemoryIfPsuedoRegister(FLOAT_REG, constantNode->registerIndex, regName);
+	}
+	else if(cType == STRINGC)
+	{
+		char* tmpCharPtr = constantNode->semantic_value.const1->const_u.sc;
+		int constantLabelNumber = codeGenConstantLabel(STRINGC, tmpCharPtr);
+		constantNode->registerIndex = getRegister(INT_REG);
+		char* regName = NULL;
+		codeGenPrepareRegister_64(INT_REG, constantNode->registerIndex, 0, 0, &regName);
+		fprintf(g_codeGenOutputFp, "ldr %s, =_CONSTANT_%d\n", regName, constantLabelNumber);
+		codeGenSaveToMemoryIfPsuedoRegister(INT_REG, constantNode->registerIndex, regName);
+	}
+}
+
+
+void codeGenExprRelatedNode(AST_NODE* exprRelatedNode)
+{
+	switch(exprRelatedNode->nodeType)
+	{
+		case EXPR_NODE:
+			codeGenExprNode(exprRelatedNode);
+			break;
+		case STMT_NODE:
+			codeGenFunctionCall(exprRelatedNode);
+			break;
+		case IDENTIFIER_NODE:
+			codeGenVariableReference(exprRelatedNode);
+			break;
+		case CONST_VALUE_NODE:
+			codeGenConstantReference(exprRelatedNode);
+			break;
+		default:
+			printf("Unhandle case in void processExprRelatedNode(AST_NODE* exprRelatedNode)\n");
+			exprRelatedNode->dataType = ERROR_TYPE;
+			break;
+	}
+}
+
+void codeGenAssignmentStmt(AST_NODE* assignmentStmtNode)
+{
+	AST_NODE* leftOp = assignmentStmtNode->child;
+	AST_NODE* rightOp = leftOp->rightSibling;
+	codeGenExprRelatedNode(rightOp);
+
+	/* TODO type conversion */
+
+	if(leftOp->semantic_value.identifierSemanticValue.kind == NORMAL_ID)
+	{
+		if(leftOp->dataType == INT_TYPE)
+		{
+			char* rightOpRegName = NULL;
+			
+			if(rightOp->dataType == FLOAT_TYPE){
+				rightOp->registerIndex = codeGenConvertFromFloatToInt(rightOp->registerIndex);
+			}
+			codeGenPrepareRegister(INT_REG, rightOp->registerIndex, 1, 0, &rightOpRegName);
+			if(!isGlobalVariable(leftOp->semantic_value.identifierSemanticValue.symbolTableEntry))
+			{
+
+				fprintf(g_codeGenOutputFp, "str %s, [x29, #%d]\n", rightOpRegName, leftOp->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);
+			}
+			else
+			{		
+				int tmp_reg_index = getRegister(INT_REG);
+				char *tmp_reg_name = intRegisterName_64[tmp_reg_index] ;
+				fprintf(g_codeGenOutputFp,"ldr %s, =_g_%s\n",tmp_reg_name,leftOp->semantic_value.identifierSemanticValue.identifierName);
+				fprintf(g_codeGenOutputFp,"str %s, [%s, #0]\n",rightOpRegName, tmp_reg_name);
+				freeRegister(INT_REG, tmp_reg_index);	
+			}
+			leftOp->registerIndex = rightOp->registerIndex;
+		}
+		else if(leftOp->dataType == FLOAT_TYPE)
+		{
+			char* rightOpRegName = NULL;
+			
+			if(rightOp->dataType == INT_TYPE){
+				rightOp->registerIndex = codeGenConvertFromIntToFloat(rightOp->registerIndex);
+			}
+			codeGenPrepareRegister(FLOAT_REG, rightOp->registerIndex, 1, 0, &rightOpRegName);
+			if(!isGlobalVariable(leftOp->semantic_value.identifierSemanticValue.symbolTableEntry))
+			{
+				fprintf(g_codeGenOutputFp, "str %s, [x29, #%d]\n", rightOpRegName, leftOp->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);
+			}
+			else
+			{
+				int tmp_reg_index = getRegister(INT_REG);
+				char *tmp_reg_name = intRegisterName_64[tmp_reg_index] ;
+				fprintf(g_codeGenOutputFp,"ldr %s, =_g_%s\n",tmp_reg_name,leftOp->semantic_value.identifierSemanticValue.identifierName);
+				fprintf(g_codeGenOutputFp, "str %s, [%s, #0]\n", rightOpRegName,tmp_reg_name);
+				freeRegister(INT_REG, tmp_reg_index);	
+			}
+			leftOp->registerIndex = rightOp->registerIndex;
+		}
+	}
+	else if(leftOp->semantic_value.identifierSemanticValue.kind == ARRAY_ID)
+	{
+		int elementAddressRegIndex = codeGenCalcArrayElemenetAddress(leftOp);
+
+		char* elementAddressRegName = NULL;
+		codeGenPrepareRegister(INT_REG, elementAddressRegIndex, 1, 0, &elementAddressRegName);
+		if(leftOp->dataType == INT_TYPE)
+		{
+			char* rightOpRegName = NULL;
+			codeGenPrepareRegister(INT_REG, rightOp->registerIndex, 1, 1, &rightOpRegName);
+			fprintf(g_codeGenOutputFp, "str %s, [%s, #0]\n", rightOpRegName, elementAddressRegName);
+
+			leftOp->registerIndex = rightOp->registerIndex;
+		}
+		else if(leftOp->dataType == FLOAT_TYPE)
+		{
+			char* rightOpRegName = NULL;
+			codeGenPrepareRegister(FLOAT_REG, rightOp->registerIndex, 1, 0, &rightOpRegName);
+
+			fprintf(g_codeGenOutputFp, "str %s, [%s, #0]\n", rightOpRegName, elementAddressRegName);
+
+			leftOp->registerIndex = rightOp->registerIndex;
+		}
+
+		freeRegister(INT_REG, elementAddressRegIndex);
+	}
+}
+
+
+void codeGenAssignOrExpr(AST_NODE* testNode)
+{
+	if(testNode->nodeType == STMT_NODE)
+	{
+		if(testNode->semantic_value.stmtSemanticValue.kind == ASSIGN_STMT)
+		{
+			codeGenAssignmentStmt(testNode);
+		}
+		else if(testNode->semantic_value.stmtSemanticValue.kind == FUNCTION_CALL_STMT)
+		{
+			codeGenFunctionCall(testNode);
+		}
+	}
+	else
+	{
+		codeGenExprRelatedNode(testNode);
+	}
+}
+
+
+void codeGenWhileStmt(AST_NODE* whileStmtNode)
+{
+	AST_NODE* boolExpression = whileStmtNode->child;
+
+	int constantZeroLabelNumber = -1;
+	if(boolExpression->dataType == FLOAT_TYPE)
+	{
+		float zero = 0.0f;
+		constantZeroLabelNumber = codeGenConstantLabel(FLOATC, &zero);
+	}
+
+	int labelNumber = getLabelNumber();
+	fprintf(g_codeGenOutputFp, "_whileTestLabel_%d:\n", labelNumber);
+
+	codeGenAssignOrExpr(boolExpression);
+
+	if(boolExpression->dataType == INT_TYPE)
+	{
+		char* boolRegName = NULL;
+		codeGenPrepareRegister(INT_REG, boolExpression->registerIndex, 1, 0, &boolRegName);
+		fprintf(g_codeGenOutputFp, "cmp %s, #0\n", boolRegName);
+		fprintf(g_codeGenOutputFp, "beq _whileExitLabel_%d\n",labelNumber);
+		freeRegister(INT_REG, boolExpression->registerIndex);
+	}
+	else if(boolExpression->dataType == FLOAT_TYPE)
+	{
+		fprintf(g_codeGenOutputFp, "ldr %s, _CONSTANT_%d\n", floatWorkRegisterName[0], constantZeroLabelNumber);
+		char* boolRegName = NULL;
+		codeGenPrepareRegister(FLOAT_REG, boolExpression->registerIndex, 1, 1, &boolRegName);
+		fprintf(g_codeGenOutputFp, "fcmp %s, %s\n", boolRegName, floatWorkRegisterName[0]);
+		fprintf(g_codeGenOutputFp, "beq _whileExitLabel_%d\n", labelNumber);
+		freeRegister(FLOAT_REG, boolExpression->registerIndex);
+	}
+
+	AST_NODE* bodyNode = boolExpression->rightSibling;
+	codeGenStmtNode(bodyNode);
+
+	fprintf(g_codeGenOutputFp, "b _whileTestLabel_%d\n", labelNumber);
+	fprintf(g_codeGenOutputFp, "_whileExitLabel_%d:\n", labelNumber);
+}
+
+
+void codeGenForStmt(AST_NODE* forStmtNode)
+{
+	/*TODO*/
+}
+
+
+void codeGenIfStmt(AST_NODE* ifStmtNode)
+{
+	AST_NODE* boolExpression = ifStmtNode->child;
+
+	int constantZeroLabelNumber = -1;
+	if(boolExpression->dataType == FLOAT_TYPE)
+	{
+		float zero = 0.0f;
+		constantZeroLabelNumber = codeGenConstantLabel(FLOATC, &zero);
+	}
+
+	int labelNumber = getLabelNumber();
+
+	codeGenAssignOrExpr(boolExpression);
+
+	if(boolExpression->dataType == INT_TYPE)
+	{
+		char* boolRegName = NULL;
+		codeGenPrepareRegister(INT_REG, boolExpression->registerIndex, 1, 0, &boolRegName);
+		fprintf(g_codeGenOutputFp, "cmp %s, #0\n", boolRegName);
+		fprintf(g_codeGenOutputFp, "beq _elseLabel_%d\n", labelNumber);
+		freeRegister(INT_REG, boolExpression->registerIndex);
+	}
+	else if(boolExpression->dataType == FLOAT_TYPE)
+	{
+		fprintf(g_codeGenOutputFp, "ldr %s, _CONSTANT_%d\n", floatWorkRegisterName[0], constantZeroLabelNumber);
+		char* boolRegName = NULL;
+		codeGenPrepareRegister(FLOAT_REG, boolExpression->registerIndex, 1, 1, &boolRegName);
+		fprintf(g_codeGenOutputFp, "vcmp.f32 %s, %s\n", boolRegName, floatWorkRegisterName[0]);
+		fprintf(g_codeGenOutputFp, "vmrs  APSR_nzcv, FPSCR\n");
+		fprintf(g_codeGenOutputFp, "beq _whileExitLabel_%d\n", labelNumber);
+		freeRegister(FLOAT_REG, boolExpression->registerIndex);
+		codeGenPrepareRegister(FLOAT_REG, boolExpression->registerIndex, 1, 1, &boolRegName);
+	}
+
+	AST_NODE* ifBodyNode = boolExpression->rightSibling;
+	codeGenStmtNode(ifBodyNode);
+
+	fprintf(g_codeGenOutputFp, "b _ifExitLabel_%d\n", labelNumber);
+	fprintf(g_codeGenOutputFp, "_elseLabel_%d:\n", labelNumber);
+	AST_NODE* elsePartNode = ifBodyNode->rightSibling;
+	codeGenStmtNode(elsePartNode);
+	fprintf(g_codeGenOutputFp, "_ifExitLabel_%d:\n", labelNumber);
+}
+
+
+void codeGenReturnStmt(AST_NODE* returnStmtNode)
+{
+	AST_NODE* returnVal = returnStmtNode->child;
+	if(returnVal->nodeType != NUL_NODE)
+	{
+		codeGenExprRelatedNode(returnVal);
+		/* TODO type conversion */
+
+		char* returnValRegName = NULL;
+		if (returnVal->dataType == INT_TYPE)
+		{
+			codeGenPrepareRegister(INT_REG, returnVal->registerIndex, 1, 0, &returnValRegName);
+			fprintf(g_codeGenOutputFp, "mov w0, %s\n", returnValRegName);
+			freeRegister(INT_REG, returnVal->registerIndex);
+		}
+		else if(returnVal->dataType == FLOAT_TYPE)
+		{
+			codeGenPrepareRegister(FLOAT_REG, returnVal->registerIndex, 1, 0, &returnValRegName);
+			fprintf(g_codeGenOutputFp, "fmov s0, %s\n", returnValRegName);
+			freeRegister(FLOAT_REG, returnVal->registerIndex);
+		}
+	}
+	fprintf(g_codeGenOutputFp, "b _end_%s\n", g_currentFunctionName); 
+}
+
+
+void codeGenStmtNode(AST_NODE* stmtNode)
+{
+	printSourceFile(g_codeGenOutputFp, stmtNode->linenumber);
+
+	if(stmtNode->nodeType == NUL_NODE)
+	{
+		return;
+	}
+	else if(stmtNode->nodeType == BLOCK_NODE)
+	{
+		codeGenBlockNode(stmtNode);
+	}
+	else
+	{
+		switch(stmtNode->semantic_value.stmtSemanticValue.kind)
+		{
+			case WHILE_STMT:
+				codeGenWhileStmt(stmtNode);
+				break;
+			case FOR_STMT:
+				codeGenForStmt(stmtNode);
+				break;
+			case ASSIGN_STMT:
+				codeGenAssignmentStmt(stmtNode);
+				if(stmtNode->child->dataType == INT_TYPE)
+				{
+					freeRegister(INT_REG, stmtNode->child->registerIndex);
+				}
+				else if(stmtNode->child->dataType == FLOAT_TYPE)
+				{
+					freeRegister(FLOAT_REG, stmtNode->child->registerIndex);
+				}
+				break;
+			case IF_STMT:
+				codeGenIfStmt(stmtNode);
+				break;
+			case FUNCTION_CALL_STMT:
+				codeGenFunctionCall(stmtNode);
+				if(stmtNode->registerIndex != -1)
+				{
+					if(stmtNode->dataType == INT_TYPE)
+					{
+						freeRegister(INT_REG, stmtNode->registerIndex);
+					}
+					else if(stmtNode->dataType == FLOAT_TYPE)
+					{
+						freeRegister(FLOAT_REG, stmtNode->registerIndex);
+					}
+				}
+				break;
+			case RETURN_STMT:
+				codeGenReturnStmt(stmtNode);
+				break;
+			default:
+				printf("Unhandle case in void processStmtNode(AST_NODE* stmtNode)\n");
+				break;
+		}
+	}
+}
+
+
+void codeGenGeneralNode(AST_NODE* node)
+{
+	AST_NODE *traverseChildren = node->child;
+	switch(node->nodeType)
+	{
 		case VARIABLE_DECL_LIST_NODE:
-			while(traverseChildren) {
-				CG_processDeclarationNode(traverseChildren, frameSize);
+			while(traverseChildren)
+			{
+				AST_NODE* typeNode = traverseChildren->child;
+				AST_NODE* idNode = typeNode->rightSibling;
+				while(idNode){
+//					printf("we need declare local variable:%s\n", idNode->semantic_value.identifierSemanticValue.identifierName);
+					SymbolTableEntry* idSymbolTableEntry = idNode->semantic_value.identifierSemanticValue.symbolTableEntry;
+					TypeDescriptor* idTypeDescriptor = idSymbolTableEntry->attribute->attr.typeDescriptor;
+					if(idTypeDescriptor->kind == SCALAR_TYPE_DESCRIPTOR)
+					{
+						if(idTypeDescriptor->properties.dataType == INT_TYPE)
+						{
+							if(idNode->semantic_value.identifierSemanticValue.kind == WITH_INIT_ID){
+								int number = codeGenConstantLabel(INTEGERC, &(idNode->child->semantic_value.const1->const_u.intval));
+								int regIndex = getRegister(INT_REG);
+								char* regName = NULL;
+								codeGenPrepareRegister(INT_REG, regIndex, 0, 0, &regName);
+	
+								fprintf(g_codeGenOutputFp, "\tldr %s, _CONSTANT_%d\n", regName, number);
+								fprintf(g_codeGenOutputFp, "\tstr %s, [x29, #%d]\n", regName, idNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);				
+								freeRegister(INT_REG, regIndex);
+							}
+							// else
+							// 	fprintf(g_codeGenOutputFp, "_g_%s: .word 0\n", idSymbolTableEntry->name);
+						}
+						else if(idTypeDescriptor->properties.dataType == FLOAT_TYPE)
+						{
+
+							if(idNode->semantic_value.identifierSemanticValue.kind == WITH_INIT_ID){
+								int number = codeGenConstantLabel(FLOATC, &(idNode->child->semantic_value.const1->const_u.fval));
+								int regIndex = getRegister(FLOAT_REG);
+								char* regName = NULL;
+								codeGenPrepareRegister(FLOAT_REG, regIndex, 0, 0, &regName);
+	
+								fprintf(g_codeGenOutputFp, "\tldr %s, _CONSTANT_%d\n", regName, number);
+								fprintf(g_codeGenOutputFp, "\tstr %s, [x29, #%d]\n", regName, idNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);				
+								freeRegister(INT_REG, regIndex);
+							}
+							// else
+							// 	fprintf(g_codeGenOutputFp, "_g_%s: .float 0.0\n", idSymbolTableEntry->name);
+						}
+					}
+
+					idNode = idNode->rightSibling;
+				}
 				traverseChildren = traverseChildren->rightSibling;
 			}
 			break;
 		case STMT_LIST_NODE:
-			while(traverseChildren) {
-				CG_processStmtNode(traverseChildren, frameSize);
+			while(traverseChildren)
+			{
+				codeGenStmtNode(traverseChildren);
 				traverseChildren = traverseChildren->rightSibling;
 			}
 			break;
 		case NONEMPTY_ASSIGN_EXPR_LIST_NODE:
-			while(traverseChildren) {
+			while(traverseChildren)
+			{
+				codeGenAssignOrExpr(traverseChildren);
+				if(traverseChildren->rightSibling)
+				{
+					if(traverseChildren->dataType == INT_TYPE)
+					{
+						freeRegister(INT_REG, traverseChildren->registerIndex);
+					}
+					else if(traverseChildren->dataType == FLOAT_TYPE)
+					{
+						freeRegister(FLOAT_REG, traverseChildren->registerIndex);
+					}
+				}
 				traverseChildren = traverseChildren->rightSibling;
 			}
+			node->registerIndex = traverseChildren->registerIndex;
 			break;
 		case NONEMPTY_RELOP_EXPR_LIST_NODE:
-			while(traverseChildren) {
-				CG_processExprRelatedNode(traverseChildren);
+			while(traverseChildren)
+			{
+				codeGenExprRelatedNode(traverseChildren);
+				if(traverseChildren->rightSibling)
+				{
+					if(traverseChildren->dataType == INT_TYPE)
+					{
+						freeRegister(INT_REG, traverseChildren->registerIndex);
+					}
+					else if(traverseChildren->dataType == FLOAT_TYPE)
+					{
+						freeRegister(FLOAT_REG, traverseChildren->registerIndex);
+					}
+				}
 				traverseChildren = traverseChildren->rightSibling;
 			}
+			node->registerIndex = traverseChildren->registerIndex;
 			break;
 		case NUL_NODE:
 			break;
-    }
-}
-
-void CG_processDeclarationNode(AST_NODE* declarationNode, int* frameSize)
-{
-    AST_NODE *typeNode = declarationNode->child;
-    CG_processTypeNode(typeNode);
-    
-    switch(declarationNode->semantic_value.declSemanticValue.kind) {
-		case VARIABLE_DECL:
-			CG_declareIdList(declarationNode, VARIABLE_ATTRIBUTE, 0, frameSize);
+		default:
+			printf("Unhandle case in void processGeneralNode(AST_NODE *node)\n");
+			node->dataType = ERROR_TYPE;
 			break;
-		case TYPE_DECL:
-			CG_declareIdList(declarationNode, TYPE_ATTRIBUTE, 0, NULL);
-			break;
-		case FUNCTION_DECL:
-			CG_declareFunction(declarationNode);
-			break;
-		case FUNCTION_PARAMETER_DECL:
-			CG_declareIdList(declarationNode, VARIABLE_ATTRIBUTE, 1, NULL); // TODO
-			break;
-    }
-    return;
-}
-
-void CG_processTypeNode(AST_NODE* idNodeAsType)
-{
-    SymbolTableEntry* symbolTableEntry = retrieveSymbol(idNodeAsType->semantic_value.identifierSemanticValue.identifierName);
-    idNodeAsType->semantic_value.identifierSemanticValue.symbolTableEntry = symbolTableEntry;
-    switch(symbolTableEntry->attribute->attr.typeDescriptor->kind) {
-        case SCALAR_TYPE_DESCRIPTOR:
-            idNodeAsType->dataType = symbolTableEntry->attribute->attr.typeDescriptor->properties.dataType;
-            break;
-        case ARRAY_TYPE_DESCRIPTOR:
-            idNodeAsType->dataType = symbolTableEntry->attribute->attr.typeDescriptor->properties.arrayProperties.elementType;
-            break;
-    }
-}
-
-void CG_declareIdList(AST_NODE* declarationNode, SymbolAttributeKind isVariableOrTypeAttribute, int ignoreArrayFirstDimSize, int* frameSize)
-{
-    AST_NODE* typeNode = declarationNode->child;
-    TypeDescriptor *typeDescriptorOfTypeNode = typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
-    AST_NODE* traverseIDList = typeNode->rightSibling;
-    while(traverseIDList) {
-        SymbolAttribute* attribute = (SymbolAttribute*)malloc(sizeof(SymbolAttribute));
-        attribute->attributeKind = isVariableOrTypeAttribute;
-        switch(traverseIDList->semantic_value.identifierSemanticValue.kind) {
-            case NORMAL_ID:
-                attribute->attr.typeDescriptor = typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
-                break;
-            case ARRAY_ID:
-                attribute->attr.typeDescriptor = (TypeDescriptor*)malloc(sizeof(TypeDescriptor));
-                processDeclDimList(traverseIDList, attribute->attr.typeDescriptor, ignoreArrayFirstDimSize);
-                if(typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor->kind == SCALAR_TYPE_DESCRIPTOR) {
-                    attribute->attr.typeDescriptor->properties.arrayProperties.elementType = 
-                        typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor->properties.dataType;
-                }
-                else {
-                    int typeArrayDimension = typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor->properties.arrayProperties.dimension;
-                    int idArrayDimension = attribute->attr.typeDescriptor->properties.arrayProperties.dimension;
-                        
-					attribute->attr.typeDescriptor->properties.arrayProperties.elementType = 
-                        typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor->properties.arrayProperties.elementType;
-                    attribute->attr.typeDescriptor->properties.arrayProperties.dimension = 
-                        typeArrayDimension + idArrayDimension;
-                    int indexType = 0;
-                    int indexId = 0;
-                    for(indexType = 0, indexId = idArrayDimension; indexId < idArrayDimension + typeArrayDimension; ++indexType, ++indexId) {
-                        attribute->attr.typeDescriptor->properties.arrayProperties.sizeInEachDimension[indexId] = 
-                            typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor->properties.arrayProperties.sizeInEachDimension[indexType];
-                    }
-                }
-                break;
-            case WITH_INIT_ID:
-                attribute->attr.typeDescriptor = typeNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
-                break;
-		}
-        traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry =
-            enterSymbol(traverseIDList->semantic_value.identifierSemanticValue.identifierName, attribute);
-		enterAddress(traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry, frameSize);
-		if(traverseIDList->semantic_value.identifierSemanticValue.kind == NORMAL_ID && 
-			traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry->nestingLevel == 0 &&
-			attribute->attributeKind == VARIABLE_ATTRIBUTE) {
-			if(attribute->attr.typeDescriptor->properties.dataType == INT_TYPE) {
-				fprintf(fp, ".data\n");
-				char* identifierName = traverseIDList->semantic_value.identifierSemanticValue.identifierName;
-				fprintf(fp, "_g_%s: .word %d\n", identifierName, 0);
-			}
-			else {
-				fprintf(fp, ".data\n");
-				char* identifierName = traverseIDList->semantic_value.identifierSemanticValue.identifierName;
-				float fval = 0.0;
-				fprintf(fp, "_g_%s: .word 0x%x\n", identifierName, *(int*)&fval);
-			}
-		}
-		if(traverseIDList->semantic_value.identifierSemanticValue.kind == WITH_INIT_ID) {// generate init
-			// TODO:only local variable init is support, global variable init is to be done
-			// TODO:we are not support type coercion
-			AST_NODE* constNode = traverseIDList->child;
-			
-			if(attribute->attr.typeDescriptor->properties.dataType == INT_TYPE) {
-				if(traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry->nestingLevel == 0) { // global variable
-					fprintf(fp, ".data\n");
-					char* identifierName = traverseIDList->semantic_value.identifierSemanticValue.identifierName;
-					int intval = constNode->semantic_value.const1->const_u.intval;
-					fprintf(fp, "_g_%s: .word %d\n", identifierName, intval);
-				}
-				else { // local variable
-					fprintf(fp, ".data\n");
-					fprintf(fp, "_CONSTANT_%d: .word %d\n", constCount, constNode->semantic_value.const1->const_u.intval);
-					fprintf(fp, ".text\n");
-					int xReg = popPoll(&xpoll);
-					fprintf(fp, "\tldr w%d, _CONSTANT_%d\n", xReg, constCount);
-					fprintf(fp, "\tstr w%d, [x29, #-%d]\n", xReg, traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry->addr);
-					pushPoll(&xpoll, xReg);
-					constCount++;
-				}
-			}
-			else {
-				if(traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry->nestingLevel == 0) { // global variable
-					fprintf(fp, ".data\n");
-					char* identifierName = traverseIDList->semantic_value.identifierSemanticValue.identifierName;
-					float fval = constNode->semantic_value.const1->const_u.fval;
-					fprintf(fp, "_g_%s: .word 0x%x\n", identifierName, *(int*)&fval);
-				}
-				else { // local variable
-					fprintf(fp, ".data\n");
-					float fval = constNode->semantic_value.const1->const_u.fval;
-					fprintf(fp, "_CONSTANT_%d: .word 0x%x\n", constCount, *(int*)&fval);
-					fprintf(fp, ".text\n");
-					int vReg = popPoll(&vpoll);
-					fprintf(fp, "\tldr s%d, _CONSTANT_%d\n", vReg, constCount);
-					fprintf(fp, "\tstr s%d, [x29, #-%d]\n", vReg, traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry->addr);
-					pushPoll(&vpoll, vReg);
-					constCount++;
-				}
-			}
-		}
-        traverseIDList = traverseIDList->rightSibling;
-    }
-}
-
-void CG_declareFunction(AST_NODE* declarationNode)
-{
-    AST_NODE* returnTypeNode = declarationNode->child;
-    AST_NODE* functionNameID = returnTypeNode->rightSibling;
-    
-    SymbolAttribute* attribute = NULL;
-    attribute = (SymbolAttribute*)malloc(sizeof(SymbolAttribute));
-    attribute->attributeKind = FUNCTION_SIGNATURE;
-    attribute->attr.functionSignature = (FunctionSignature*)malloc(sizeof(FunctionSignature));
-    attribute->attr.functionSignature->returnType = returnTypeNode->dataType;
-    attribute->attr.functionSignature->parameterList = NULL;
-
-	if(strcmp(functionNameID->semantic_value.identifierSemanticValue.identifierName, "main") == 0)
-		functionNameID->semantic_value.identifierSemanticValue.identifierName = "MAIN";
-    enterSymbol(functionNameID->semantic_value.identifierSemanticValue.identifierName, attribute);
-
-    openScope();
-
-    AST_NODE *parameterListNode = functionNameID->rightSibling;
-    AST_NODE *traverseParameter = parameterListNode->child;
-    int parametersCount = 0;
-    if(traverseParameter) {
-        ++parametersCount;
-        processDeclarationNode(traverseParameter);
-        AST_NODE *parameterID = traverseParameter->child->rightSibling;
-        
-        Parameter *parameter = (Parameter*)malloc(sizeof(Parameter));
-        parameter->next = NULL;
-        parameter->parameterName = parameterID->semantic_value.identifierSemanticValue.identifierName;
-        parameter->type = parameterID->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
-        attribute->attr.functionSignature->parameterList = parameter;
-
-        traverseParameter = traverseParameter->rightSibling;
-    }
-
-    Parameter *parameterListTail = attribute->attr.functionSignature->parameterList;
-    
-	int useless = 0;
-    while(traverseParameter) {
-        ++parametersCount;
-        CG_processDeclarationNode(traverseParameter, NULL); // TODO
-        AST_NODE *parameterID = traverseParameter->child->rightSibling;
-        
-		Parameter *parameter = (Parameter*)malloc(sizeof(Parameter));
-        parameter->next = NULL;
-        parameter->parameterName = parameterID->semantic_value.identifierSemanticValue.identifierName;
-        parameter->type = parameterID->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
-        parameterListTail->next = parameter;
-        parameterListTail = parameter;
-        traverseParameter = traverseParameter->rightSibling;
-    }
-    attribute->attr.functionSignature->parametersCount = parametersCount;
-
-    AST_NODE *blockNode = parameterListNode->rightSibling;
-    AST_NODE *traverseListNode = blockNode->child;
-
-	/* code generation : _start_func */
-	fprintf(fp, ".text\n");
-	fprintf(fp, "_start_%s:\n", functionNameID->semantic_value.identifierSemanticValue.identifierName);
-	fprintf(fp, "\tstr x30, [sp, #0]\n"); // save ra
-	fprintf(fp, "\tstr x29, [sp, #-8]\n"); // save old fp
-	fprintf(fp, "\tadd x29, sp, #-8\n");
-	fprintf(fp, "\tadd sp, sp, #-16\n");
-	fprintf(fp, "\tldr x30, =_frameSize_%s\n", functionNameID->semantic_value.identifierSemanticValue.identifierName);
-	fprintf(fp, "\tldr x30, [x30, #0]\n");
-	fprintf(fp, "\tsub sp, sp, w30\n");
-	
-	
-	int frameSize = 0;
-	// save x9-x15
-	int offset = 0;
-	int i;
-
-	for(i = 9; i <= 15; i++) {
-		offset += 8;
-		fprintf(fp, "\tstr x%d, [sp, #%d]\n", i, offset);
-		pushPoll(&xpoll, i);
 	}
-
-		
-		// save s16-s23
-	for(i = 16; i <=23; i++) {
-		offset += 4;
-		fprintf(fp, "\tstr s%d, [sp, #%d]\n", i, offset);
-		pushPoll(&vpoll, i);
-	}
-
-    while(traverseListNode) {
-        CG_processGeneralNode(traverseListNode, &frameSize);
-        traverseListNode = traverseListNode->rightSibling;
-    }
-
-	frameSize += offset;
-	/* code generation : __end_func */
-	fprintf(fp, ".text\n");
-	fprintf(fp, "_end_%s:\n", functionNameID->semantic_value.identifierSemanticValue.identifierName);
-		// resume x9-x15
-	offset = 0;
-	for(i = 9; i <= 15; i++) {
-		offset += 8;
-		fprintf(fp, "\tldr x%d, [sp, #%d]\n", i, offset);
-	}
-	
-	
-		// resume s16-s23
-	for(i = 16; i <= 23; i++) {	
-		offset += 4;
-		fprintf(fp, "\tldr s%d, [sp, #%d]\n", i, offset);
-	}
-	
-	fprintf(fp, "\tldr x30, [x29, #8]\n");
-	fprintf(fp, "\tmov sp, x29\n");
-	fprintf(fp, "\tadd sp, sp, #8\n");
-	fprintf(fp, "\tldr x29, [x29, #0]\n");
-	fprintf(fp, "\tRET x30\n");
-	
-	fprintf(fp, ".data\n");
-	fprintf(fp, "\t_frameSize_%s: .word %d\n", functionNameID->semantic_value.identifierSemanticValue.identifierName, frameSize);
-	//dumpSymbolTable();
-    closeScope();
-
-}
-
-void CG_processStmtNode(AST_NODE* stmtNode, int* frameSize)
-{
-	if(stmtNode->nodeType == NUL_NODE) {
-		// do nothing
-	}	
-    else if(stmtNode->nodeType == BLOCK_NODE) {
-        CG_processBlockNode(stmtNode, frameSize);
-	}
-    else {
-        switch(stmtNode->semantic_value.stmtSemanticValue.kind) {
-			case WHILE_STMT:
-				CG_checkWhileStmt(stmtNode, frameSize);
-				break;
-			case FOR_STMT:
-				//checkForStmt(stmtNode);
-				break;
-			case ASSIGN_STMT:
-				CG_checkAssignmentStmt(stmtNode);
-				break;
-			case IF_STMT:
-				CG_checkIfStmt(stmtNode, frameSize);
-				break;
-			case FUNCTION_CALL_STMT:
-				CG_checkFunctionCall(stmtNode, 0);
-				break;
-			case RETURN_STMT:
-				CG_checkReturnStmt(stmtNode);
-				break;
-        }
-    }
-}
-
-
-void CG_checkAssignmentStmt(AST_NODE* assignmentNode) {
-	AST_NODE* leftOp = assignmentNode->child;
-    AST_NODE* rightOp = leftOp->rightSibling;
-	int addrOrReg;
-	int isGlobal;
-    CG_processVariableLValue(leftOp, &isGlobal, &addrOrReg);
-    CG_processExprRelatedNode(rightOp);
-	if(assignmentNode->dataType == INT_TYPE) {
-		if(isGlobal) {
-			fprintf(fp, "\tstr w%d, [x%d, #0]\n", rightOp->reg, addrOrReg);
-			pushPoll(&xpoll, rightOp->reg);
-			pushPoll(&xpoll, addrOrReg);
-		}
-		else {
-			fprintf(fp, "\tstr w%d, [x29, #-%d]\n", rightOp->reg, addrOrReg);
-			pushPoll(&xpoll, rightOp->reg);
-		}
-	}
-	else {
-		if(isGlobal) {
-			fprintf(fp, "\tstr s%d, [x%d, #0]\n", rightOp->reg, addrOrReg);
-			pushPoll(&vpoll, rightOp->reg);
-			pushPoll(&xpoll, addrOrReg);
-		}
-		else {
-			fprintf(fp, "\tstr s%d, [x29, #-%d]\n", rightOp->reg, addrOrReg);
-			pushPoll(&vpoll, rightOp->reg);
-		}
-	}
-
-	// we don't handle implicit type conversion in hw5
-    //assignmentNode->dataType = getBiggerType(leftOp->dataType, rightOp->dataType); 
-
-}
-
-void CG_processExprRelatedNode(AST_NODE* exprRelatedNode)
-{
-    switch(exprRelatedNode->nodeType) {
-		case EXPR_NODE:
-			CG_processExprNode(exprRelatedNode);
-			break;
-		case STMT_NODE:
-			//function call
-			CG_checkFunctionCall(exprRelatedNode, 1);
-			break;
-		case IDENTIFIER_NODE:
-			CG_processVariableRValue(exprRelatedNode);
-			break;
-		case CONST_VALUE_NODE:
-			CG_processConstValueNode(exprRelatedNode);
-			break;
-    }
-}
-
-void CG_processExprNode(AST_NODE* exprNode)
-{
-	if(exprNode->semantic_value.exprSemanticValue.isConstEval) { // view as leaf node
-		if(exprNode->dataType == INT_TYPE) {
-			fprintf(fp, ".data\n");
-			fprintf(fp, "_CONSTANT_%d: .word %d\n", constCount, exprNode->semantic_value.exprSemanticValue.constEvalValue.iValue);
-			fprintf(fp, ".text\n");
-			int src = popPoll(&xpoll);
-			fprintf(fp, "\tldr w%d, _CONSTANT_%d\n", src, constCount);
-			exprNode->reg = src;
-			constCount++;
-		}
-		else if(exprNode->dataType == FLOAT_TYPE) {
-			fprintf(fp, ".data\n");
-			float fval = exprNode->semantic_value.exprSemanticValue.constEvalValue.fValue;
-			fprintf(fp, "_CONSTANT_%d: .word 0x%x\n", constCount, *(int*)&fval);
-			fprintf(fp, ".text\n");
-			int src = popPoll(&vpoll);
-			fprintf(fp, "\tldr s%d, _CONSTANT_%d\n", src, constCount);
-			exprNode->reg = src;
-			constCount++;
-		} 
-		else {
-			printf("error in line %d\n", __LINE__);
-			exit(1);
-		}
-	}
-    else if(exprNode->semantic_value.exprSemanticValue.kind == BINARY_OPERATION) {
-        AST_NODE* leftOp = exprNode->child;
-        AST_NODE* rightOp = leftOp->rightSibling;
-        CG_processExprRelatedNode(leftOp);
-        CG_processExprRelatedNode(rightOp);
-		// we don't support type coercion in hw5
-		if(exprNode->dataType == INT_TYPE) {
-			int dst = popPoll(&xpoll);
-			switch(exprNode->semantic_value.exprSemanticValue.op.binaryOp) {
-				case BINARY_OP_ADD:
-					fprintf(fp, "\tadd w%d, w%d, w%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_SUB:
-					fprintf(fp, "\tsub w%d, w%d, w%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_MUL:
-					fprintf(fp, "\tmul w%d, w%d, w%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_DIV:
-					fprintf(fp, "\tsdiv w%d, w%d, w%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_EQ:
-					fprintf(fp, "\tcmp w%d, w%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, eq\n", dst);
-					break;
-				case BINARY_OP_GE:
-					fprintf(fp, "\tcmp w%d, w%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, ge\n", dst);
-					break;
-				case BINARY_OP_LE:
-					fprintf(fp, "\tcmp w%d, w%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, le\n", dst);
-					break;
-				case BINARY_OP_NE:
-					fprintf(fp, "\tcmp w%d, w%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, ne\n", dst);
-					break;
-				case BINARY_OP_GT:
-					fprintf(fp, "\tcmp w%d, w%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, gt\n", dst);
-					break;
-				case BINARY_OP_LT:
-					fprintf(fp, "\tcmp w%d, w%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, lt\n", dst);
-					break;
-				case BINARY_OP_AND:
-					fprintf(fp, "\tand w%d, w%d, w%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_OR:	
-					fprintf(fp, "\torr w%d, w%d, w%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-            }
-			exprNode->reg = dst;
-			pushPoll(&xpoll, leftOp->reg);
-			pushPoll(&xpoll, rightOp->reg);
-		} 
-		else if(exprNode->dataType == FLOAT_TYPE) {
-			int tmp = popPoll(&xpoll);
-			int tmp2 = popPoll(&xpoll);
-			int dst = popPoll(&vpoll);
-			switch(exprNode->semantic_value.exprSemanticValue.op.binaryOp) {
-				case BINARY_OP_ADD:
-					fprintf(fp, "\tfadd s%d, s%d, s%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_SUB:
-					fprintf(fp, "\tfsub s%d, s%d, s%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_MUL:
-					fprintf(fp, "\tfmul s%d, s%d, s%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_DIV:
-					fprintf(fp, "\tfdiv s%d, s%d, s%d\n", dst, leftOp->reg, rightOp->reg);
-					break;
-				case BINARY_OP_EQ:
-					fprintf(fp, "\tfcmp s%d, s%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, eq\n", tmp);
-					fprintf(fp, "\tscvtf s%d, w%d\n", dst, tmp);
-					break;
-				case BINARY_OP_GE:
-					fprintf(fp, "\tfcmp s%d, s%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, ge\n", tmp);
-					fprintf(fp, "\tscvtf s%d, w%d\n", dst, tmp);
-					break;
-				case BINARY_OP_LE:
-					fprintf(fp, "\tfcmp s%d, s%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, le\n", tmp);
-					fprintf(fp, "\tscvtf s%d, w%d\n", dst, tmp);
-					break;
-				case BINARY_OP_NE:
-					fprintf(fp, "\tfcmp s%d, s%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, ne\n", tmp);
-					fprintf(fp, "\tscvtf s%d, w%d\n", dst, tmp);
-					break;
-				case BINARY_OP_GT:
-					fprintf(fp, "\tfcmp s%d, s%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, gt\n", tmp);
-					fprintf(fp, "\tscvtf s%d, w%d\n", dst, tmp);
-					break;
-				case BINARY_OP_LT:
-					fprintf(fp, "\tfcmp s%d, s%d\n", leftOp->reg, rightOp->reg);
-					fprintf(fp, "\tcset w%d, lt\n", tmp);
-					fprintf(fp, "\tscvtf s%d, w%d\n", dst, tmp);
-					break;
-				case BINARY_OP_AND:
-					fprintf(fp, "\tfmov w%d, s%d\n", tmp, leftOp->reg);
-					fprintf(fp, "\tfmov w%d, s%d\n", tmp2, rightOp->reg);
-					fprintf(fp, "\tand w%d, w%d, w%d\n", tmp, tmp, tmp2);
-					fprintf(fp, "\tfmov s%d, w%d\n", dst, tmp);
-					break;
-				case BINARY_OP_OR:	
-					fprintf(fp, "\tfmov w%d, s%d\n", tmp, leftOp->reg);
-					fprintf(fp, "\tfmov w%d, s%d\n", tmp2, rightOp->reg);
-					fprintf(fp, "\torr w%d, w%d, w%d\n", tmp, tmp, tmp2);
-					fprintf(fp, "\tfmov s%d, w%d\n", dst, tmp);
-					break;
-            }
-			exprNode->reg = dst;
-			pushPoll(&vpoll, leftOp->reg);
-			pushPoll(&vpoll, rightOp->reg);
-			pushPoll(&xpoll, tmp);
-			pushPoll(&xpoll, tmp2);
-		}
-		else {
-			printf("error in line %d\n", __LINE__);
-			exit(1);
-		}
-    }
-    else {
-        AST_NODE* operand = exprNode->child;
-        CG_processExprRelatedNode(operand);
-		if(exprNode->dataType == INT_TYPE) {
-			int dst = popPoll(&xpoll);
-			switch(exprNode->semantic_value.exprSemanticValue.op.unaryOp) {
-				case UNARY_OP_POSITIVE:
-					fprintf(fp, "\tmov w%d, w%d\n", dst, operand->reg);
-					break;
-				case UNARY_OP_NEGATIVE:
-					fprintf(fp, "\tsub w%d, wzr, w%d\n", dst, operand->reg);
-					break;
-				case UNARY_OP_LOGICAL_NEGATION:
-					fprintf(fp, "\tcmp w%d, #0\n", operand->reg);
-					fprintf(fp, "\tcset w%d, eq\n", dst);
-					break;
-            }
-			exprNode->reg = dst;
-			pushPoll(&xpoll, operand->reg);
-		}
-		else if(exprNode->dataType == FLOAT_TYPE) {
-			int dst = popPoll(&vpoll);
-			int tmp = popPoll(&xpoll);
-			switch(exprNode->semantic_value.exprSemanticValue.op.unaryOp) {
-				case UNARY_OP_POSITIVE:
-					fprintf(fp, "\tfmov s%d, s%d\n", dst, operand->reg);
-					break;
-				case UNARY_OP_NEGATIVE:
-					fprintf(fp, "\tfneg s%d, s%d\n", dst, operand->reg);
-					break;
-				case UNARY_OP_LOGICAL_NEGATION:
-					fprintf(fp, "\tfcmp s%d, #0.0\n", operand->reg);
-					fprintf(fp, "\tcset w%d, eq\n", tmp);
-					fprintf(fp, "\tscvtf s%d, w%d\n", dst, tmp);
-					break;
-            }
-			exprNode->reg = dst;
-			pushPoll(&vpoll, operand->reg);
-			pushPoll(&xpoll, tmp);
-		}
-		else {
-			printf("error in line %d\n", __LINE__);
-			exit(1);
-		}
-    }
-}
-
-void CG_processConstValueNode(AST_NODE* constValueNode)
-{
-    switch(constValueNode->semantic_value.const1->const_type) {
-		case INTEGERC: {
-			fprintf(fp, ".data\n");
-			fprintf(fp, "_CONSTANT_%d: .word %d\n", constCount, constValueNode->semantic_value.const1->const_u.intval);
-			fprintf(fp, ".text\n");
-			int xReg = popPoll(&xpoll);
-			fprintf(fp, "\tldr w%d, _CONSTANT_%d\n", xReg, constCount);
-			constValueNode->reg = xReg;
-			constCount++;
-			break;
-		}
-		case FLOATC: {
-			fprintf(fp, ".data\n");
-			float fval = constValueNode->semantic_value.const1->const_u.fval;
-			fprintf(fp, "_CONSTANT_%d: .word 0x%x\n", constCount, *(int*)&fval);
-			fprintf(fp, ".text\n");
-			int vReg = popPoll(&vpoll);
-			fprintf(fp, "\tldr s%d, _CONSTANT_%d\n", vReg, constCount);
-			constValueNode->reg = vReg;
-			constCount++;
-			break;
-		}
-		case STRINGC: {
-			fprintf(fp, ".data\n");
-			char buf[256];
-			memset(buf, 0, 256);
-			int len = strlen(constValueNode->semantic_value.const1->const_u.sc);
-			char* ptr = constValueNode->semantic_value.const1->const_u.sc;
-			ptr++;
-			strncpy(buf, ptr, len - 2);
-			fprintf(fp, "_CONSTANT_%d: .ascii \"%s\\000\"\n", constCount, buf);
-			fprintf(fp, ".align 3\n");
-			fprintf(fp, ".text\n");
-			int xReg = popPoll(&xpoll);
-			fprintf(fp, "\tldr x%d, =_CONSTANT_%d\n", xReg, constCount);
-			constValueNode->reg = xReg;
-			constCount++;
-			break;
-		}
-    }
-
-}
-
-void CG_processVariableRValue(AST_NODE* idNode)
-{
-    SymbolTableEntry *symbolTableEntry = retrieveSymbol(idNode->semantic_value.identifierSemanticValue.identifierName);
-    
-    idNode->semantic_value.identifierSemanticValue.symbolTableEntry = symbolTableEntry;
-     
-    TypeDescriptor *typeDescriptor = idNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
-        
-    if(idNode->semantic_value.identifierSemanticValue.kind == NORMAL_ID)
-    {
-        if(typeDescriptor->kind == ARRAY_TYPE_DESCRIPTOR) {
-            /* we don't handle array reference in hw5 */
-        }
-        else {
-            if(idNode->dataType == INT_TYPE) {
-				if(symbolTableEntry->nestingLevel == 0) { // global variable reference
-					int xReg = popPoll(&xpoll);
-					int xReg2 = popPoll(&xpoll);
-					fprintf(fp, "\tldr x%d, =_g_%s\n", xReg, idNode->semantic_value.identifierSemanticValue.identifierName);
-					fprintf(fp, "\tldr w%d, [x%d, #0]\n", xReg2, xReg);
-					pushPoll(&xpoll, xReg);
-					idNode->reg = xReg2;
-				}
-				else { // local variable reference
-					int xReg = popPoll(&xpoll);
-					fprintf(fp, "\tldr w%d, [x29, #-%d]\n", xReg, symbolTableEntry->addr);
-					idNode->reg = xReg;
-				}
-			}
-			else {
-				if(symbolTableEntry->nestingLevel == 0) { // global variable reference
-					int xReg = popPoll(&xpoll);
-					int vReg = popPoll(&xpoll);
-					fprintf(fp, "\tldr x%d, =_g_%s\n", xReg, idNode->semantic_value.identifierSemanticValue.identifierName);
-					fprintf(fp, "\tldr s%d, [x%d, #0]\n", vReg, xReg);
-					pushPoll(&xpoll, xReg);
-					idNode->reg = vReg;
-				}
-				else { // local variable reference
-					int vReg = popPoll(&vpoll);
-					fprintf(fp, "\tldr s%d, [x29, #-%d]\n", vReg, symbolTableEntry->addr);
-					idNode->reg = vReg;
-				}
-			}
-        }
-    }
-    else if(idNode->semantic_value.identifierSemanticValue.kind == ARRAY_ID) {
-		/* we don't handle array reference in hw5 */
-    }
-}
-
-void CG_checkFunctionCall(AST_NODE* functionCallNode, int asExpr)
-{
-    AST_NODE* functionIDNode = functionCallNode->child;
-
-    //special case
-	//TODO: lib call
-    if(strcmp(functionIDNode->semantic_value.identifierSemanticValue.identifierName, "write") == 0) {
-        CG_checkWriteFunction(functionCallNode);
-        return;
-    }
-	if(strcmp(functionIDNode->semantic_value.identifierSemanticValue.identifierName, "read") == 0) {
-		fprintf(fp, "\tbl _read_int\n");
-		if(asExpr) {
-			int xReg = popPoll(&xpoll);
-			fprintf(fp, "\tmov w%d, w0\n", xReg);
-			functionCallNode->reg = xReg;
-		}
-		return;
-	}
-	if(strcmp(functionIDNode->semantic_value.identifierSemanticValue.identifierName, "fread") == 0) {
-		fprintf(fp, "\tbl _read_float\n");
-		if(asExpr) {
-			int vReg = popPoll(&vpoll);
-			fprintf(fp, "\tfmov s%d, s0\n", vReg);
-			functionCallNode->reg = vReg;
-		}
-		return;
-	}
-
-    SymbolTableEntry* symbolTableEntry = retrieveSymbol(functionIDNode->semantic_value.identifierSemanticValue.identifierName);
-    functionIDNode->semantic_value.identifierSemanticValue.symbolTableEntry = symbolTableEntry;
-
-	/* we don't support parameter passing in hw5 */
-	fprintf(fp, "\tbl _start_%s\n", symbolTableEntry->name);
-	if(asExpr) {
-		if(functionCallNode->dataType == INT_TYPE) {
-			int xReg = popPoll(&xpoll);
-			fprintf(fp, "\tmov w%d, w0\n", xReg);
-			functionCallNode->reg = xReg;
-		}
-		else {
-			int vReg = popPoll(&vpoll);
-			fprintf(fp, "\tfmov s%d, s0\n", vReg);
-			functionCallNode->reg = vReg;
-		}
-	}
-}
-
-void CG_processVariableLValue(AST_NODE* idNode, int* isGlobal, int* addrOrReg)
-{
-    SymbolTableEntry *symbolTableEntry = retrieveSymbol(idNode->semantic_value.identifierSemanticValue.identifierName);
-    
-    idNode->semantic_value.identifierSemanticValue.symbolTableEntry = symbolTableEntry; 
-    TypeDescriptor *typeDescriptor = idNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->attr.typeDescriptor;
-        
-    if(idNode->semantic_value.identifierSemanticValue.kind == NORMAL_ID) {
-         if(symbolTableEntry->nestingLevel == 0) { // global variable
-			*isGlobal = 1;
-			*addrOrReg = popPoll(&xpoll);
-			fprintf(fp, "\tldr x%d, =_g_%s\n", *addrOrReg, idNode->semantic_value.identifierSemanticValue.identifierName);
-		 }
-		 else { // local variable
-			*isGlobal = 0;
-			*addrOrReg = symbolTableEntry->addr;
-		}
-    }
-    else if(idNode->semantic_value.identifierSemanticValue.kind == ARRAY_ID) {
-        /* we don't support */
-    }
-}
-
-void CG_checkWriteFunction(AST_NODE* functionCallNode)
-{
-    AST_NODE* functionIDNode = functionCallNode->child;
-
-    AST_NODE* actualParameterList = functionIDNode->rightSibling;
-	int useless = 0;
-    CG_processGeneralNode(actualParameterList, &useless);
-
-    AST_NODE* actualParameter = actualParameterList->child;
-    
-    if(actualParameter->dataType == INT_TYPE) {
-		fprintf(fp, "\tmov w0, w%d\n", actualParameter->reg);
-		fprintf(fp, "\tbl _write_int\n");
-		pushPoll(&xpoll, actualParameter->reg);
-	}
-	else if(actualParameter->dataType == FLOAT_TYPE) {
-		fprintf(fp, "\tfmov s0, s%d\n", actualParameter->reg);
-		fprintf(fp, "\tbl _write_float\n");
-		pushPoll(&vpoll, actualParameter->reg);
-	}
-	else {
-		fprintf(fp, "\tmov x0, x%d\n", actualParameter->reg);
-		fprintf(fp, "\tbl _write_str\n");
-		pushPoll(&xpoll, actualParameter->reg);
-	}
-}
-
-void CG_checkReturnStmt(AST_NODE* returnNode)
-{
-	/* search function idNode */
-	AST_NODE* parentNode = returnNode->parent;
-	AST_NODE* idNode;
-    while(parentNode) {
-        if(parentNode->nodeType == DECLARATION_NODE) {
-            if(parentNode->semantic_value.declSemanticValue.kind == FUNCTION_DECL) {
-                idNode = parentNode->child->rightSibling;
-            }
-            break;
-        }
-        parentNode = parentNode->parent;
-    }
-
-    if(returnNode->child->nodeType == NUL_NODE) {
-        fprintf(fp, "\tb _end_%s\n", idNode->semantic_value.identifierSemanticValue.identifierName);
-    }
-    else {
-		AST_NODE* exprNode = returnNode->child;
-        CG_processExprRelatedNode(exprNode);
-        if(returnNode->dataType == INT_TYPE) {
-			fprintf(fp, "\tmov w0, w%d\n", exprNode->reg);
-			fprintf(fp, "\tb _end_%s\n", idNode->semantic_value.identifierSemanticValue.identifierName);
-			pushPoll(&xpoll, exprNode->reg);
-		}
-		else {
-			fprintf(fp, "\tfmov s0, s%d\n", exprNode->reg);
-			fprintf(fp, "\tb _end_%s\n", idNode->semantic_value.identifierSemanticValue.identifierName);
-			pushPoll(&vpoll, exprNode->reg);
-		}
-    }
- 
-}
-
-void CG_checkWhileStmt(AST_NODE* whileNode, int* frameSize)
-{
-    AST_NODE* boolExpression = whileNode->child;
-    AST_NODE* bodyNode = boolExpression->rightSibling;
-	int labno = ctrlCount;
-	ctrlCount++;
-	fprintf(fp, "_Test%d:", labno);
-	CG_processExprRelatedNode(boolExpression);
-	/* we don't support short-circuit boolean expression in hw5 */
-	if(boolExpression->dataType == INT_TYPE) {
-		fprintf(fp, "\tcmp w%d, #0\n", boolExpression->reg);
-		fprintf(fp, "\tbeq _Lexit%d\n", labno);
-		pushPoll(&xpoll, boolExpression->reg);
-	}
-	else {
-		fprintf(fp, "\tfcmp s%d, #0.0\n", boolExpression->reg);
-		fprintf(fp, "\tbeq _Lexit%d\n", labno);
-		pushPoll(&vpoll, boolExpression->reg);
-	}
-    CG_processStmtNode(bodyNode, frameSize);
-	fprintf(fp, "\tb _Test%d\n", labno);
-	fprintf(fp, "_Lexit%d:\n", labno);
-}
-
-void CG_processBlockNode(AST_NODE* blockNode, int* frameSize)
-{
-    openScope();
-
-    AST_NODE *traverseListNode = blockNode->child;
-    while(traverseListNode)
-    {
-        CG_processGeneralNode(traverseListNode, frameSize);
-        traverseListNode = traverseListNode->rightSibling;
-    }
-	//dumpSymbolTable();
-    closeScope();
-}
-
-void CG_checkIfStmt(AST_NODE* ifNode, int* frameSize)
-{
-    AST_NODE* boolExpression = ifNode->child;
-	AST_NODE* ifBodyNode = boolExpression->rightSibling;
-    AST_NODE* elsePartNode = ifBodyNode->rightSibling;
-    int labno = ctrlCount;
-	ctrlCount++;
-	CG_processExprRelatedNode(boolExpression);
-	if(boolExpression->dataType == INT_TYPE) {
-		fprintf(fp, "\tcmp w%d, #0\n", boolExpression->reg);
-		fprintf(fp, "\tbeq _Lelse%d\n", labno);
-		pushPoll(&xpoll, boolExpression->reg);
-	}
-	else {
-		fprintf(fp, "\tfcmp s%d, #0.0\n", boolExpression->reg);
-		fprintf(fp, "\tbeq _Lelse%d\n", labno);
-		pushPoll(&vpoll, boolExpression->reg);
-	}
-	CG_processStmtNode(ifBodyNode, frameSize);
-	fprintf(fp, "\tb _Lexit%d\n", labno);
-	fprintf(fp, "_Lelse%d:\n", labno);
-    CG_processStmtNode(elsePartNode, frameSize);
-	fprintf(fp, "_Lexit%d:\n", labno);
 }

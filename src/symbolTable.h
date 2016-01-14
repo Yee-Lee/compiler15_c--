@@ -3,7 +3,6 @@
 
 #include "header.h"
 
-
 //SYMBOL_TABLE_PREINSERT_NAME
 #define SYMBOL_TABLE_INT_NAME "int"
 #define SYMBOL_TABLE_FLOAT_NAME "float"
@@ -30,7 +29,6 @@ typedef struct ArrayProperties
 {
     int dimension;
     int sizeInEachDimension[MAX_ARRAY_DIMENSION];
-    //point to a TypeDescriptor in the symbol table;
     DATA_TYPE elementType;
 } ArrayProperties;
 
@@ -50,11 +48,13 @@ typedef struct Parameter
     struct Parameter* next;
     TypeDescriptor* type;
     char* parameterName;
+    int offsetInAR;
 } Parameter;
 
 typedef struct FunctionSignature
 {
     int parametersCount;
+    int paramOffset;
     Parameter* parameterList;
     DATA_TYPE returnType;
 } FunctionSignature;
@@ -68,6 +68,7 @@ typedef struct SymbolAttribute
         TypeDescriptor* typeDescriptor;
         FunctionSignature* functionSignature;
     } attr;
+    int offsetInAR;
 } SymbolAttribute;
 
 typedef struct SymbolTableEntry
@@ -79,7 +80,6 @@ typedef struct SymbolTableEntry
 
     char* name;
     SymbolAttribute* attribute;
-	int addr;
     int nestingLevel;
 
 } SymbolTableEntry;
@@ -101,6 +101,8 @@ void removeSymbol(char* symbolName);
 int declaredLocally(char* symbolName);
 void openScope();
 void closeScope();
-void dumpSymbolTable();
-void enterAddress(SymbolTableEntry* entry, int* frameSize);
+
+int isGlobalVariable(SymbolTableEntry* symbolTableEntry);
+int getVariableSize(TypeDescriptor *typeDescriptor);
+
 #endif
