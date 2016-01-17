@@ -25,6 +25,6 @@ void readSourceFile(char* fileName)
 void printSourceFile(FILE* outputFp, int lineNumber)
 {
     if (!printCommentError) {
-        fprintf(outputFp, "# %s\n", g_sourceFile[lineNumber - 1]);
+        //fprintf(outputFp, "# %s\n", g_sourceFile[lineNumber - 1]);
     }
 }

@@ -1193,6 +1193,65 @@ void codeGenWhileStmt(AST_NODE* whileStmtNode)
 void codeGenForStmt(AST_NODE* forStmtNode)
 {
 	/*TODO*/
+	AST_NODE* initAssignNode = forStmtNode->child;
+	if(initAssignNode->nodeType != NUL_NODE){
+		codeGenGeneralNode(initAssignNode);
+		if(initAssignNode->dataType == INT_TYPE)
+			freeRegister(INT_REG, initAssignNode->registerIndex);
+		else if(initAssignNode->dataType == FLOAT_TYPE)
+			freeRegister(FLOAT_REG, initAssignNode->registerIndex);
+	}
+	// if(initAssignNode->nodeType != NUL_NODE)
+
+
+	int labelNumber = getLabelNumber();
+	fprintf(g_codeGenOutputFp, "_forTestLabel_%d:\n", labelNumber);
+
+	AST_NODE* exprRelatedNode = initAssignNode->rightSibling;
+	if(exprRelatedNode->nodeType != NUL_NODE)
+	{
+		AST_NODE* boolExpression = exprRelatedNode->child;
+		int constantZeroLabelNumber = -1;
+		if(boolExpression->dataType == FLOAT_TYPE)
+		{
+			float zero = 0.0f;
+			constantZeroLabelNumber = codeGenConstantLabel(FLOATC, &zero);
+		}
+		
+		codeGenGeneralNode(exprRelatedNode);
+
+		if(exprRelatedNode->dataType == INT_TYPE){	
+			char* boolRegName = NULL;
+			codeGenPrepareRegister(INT_REG, exprRelatedNode->registerIndex, 1, 0, &boolRegName);
+			fprintf(g_codeGenOutputFp, "cmp %s, #0\n", boolRegName);
+			fprintf(g_codeGenOutputFp, "beq _forExitLabel_%d\n",labelNumber);
+			freeRegister(INT_REG, exprRelatedNode->registerIndex);
+		}else if(exprRelatedNode->dataType == FLOAT_TYPE){
+			fprintf(g_codeGenOutputFp, "ldr %s, _CONSTANT_%d\n", floatWorkRegisterName[0], constantZeroLabelNumber);
+			char* boolRegName = NULL;
+			codeGenPrepareRegister(FLOAT_REG, exprRelatedNode->registerIndex, 1, 1, &boolRegName);
+			fprintf(g_codeGenOutputFp, "fcmp %s, %s\n", boolRegName, floatWorkRegisterName[0]);
+			fprintf(g_codeGenOutputFp, "beq _forExitLabel_%d\n", labelNumber);
+			freeRegister(FLOAT_REG, exprRelatedNode->registerIndex);
+		}
+
+	}
+	AST_NODE* iterAssignNode = exprRelatedNode->rightSibling;
+	AST_NODE* bodyNode = iterAssignNode->rightSibling;
+	codeGenStmtNode(bodyNode);
+	
+	//delay execute iteration assignments
+	if(iterAssignNode->dataType != NUL_NODE){
+		codeGenGeneralNode(iterAssignNode);
+		if(iterAssignNode->dataType == INT_TYPE)
+			freeRegister(INT_REG, iterAssignNode->registerIndex);
+		else if(iterAssignNode->dataType == FLOAT_TYPE)
+			freeRegister(FLOAT_REG, iterAssignNode->registerIndex);
+	}
+
+	fprintf(g_codeGenOutputFp, "b _forTestLabel_%d\n", labelNumber);
+	fprintf(g_codeGenOutputFp, "_forExitLabel_%d:\n", labelNumber);
+	
 }
 
 
@@ -1394,6 +1453,7 @@ void codeGenGeneralNode(AST_NODE* node)
 			while(traverseChildren)
 			{
 				codeGenAssignOrExpr(traverseChildren);
+
 				if(traverseChildren->rightSibling)
 				{
 					if(traverseChildren->dataType == INT_TYPE)
@@ -1405,9 +1465,9 @@ void codeGenGeneralNode(AST_NODE* node)
 						freeRegister(FLOAT_REG, traverseChildren->registerIndex);
 					}
 				}
+				node->registerIndex = traverseChildren->registerIndex;
 				traverseChildren = traverseChildren->rightSibling;
-			}
-			node->registerIndex = traverseChildren->registerIndex;
+			}			
 			break;
 		case NONEMPTY_RELOP_EXPR_LIST_NODE:
 			while(traverseChildren)
@@ -1424,9 +1484,12 @@ void codeGenGeneralNode(AST_NODE* node)
 						freeRegister(FLOAT_REG, traverseChildren->registerIndex);
 					}
 				}
+				//pass info up to relop node
+				node->dataType = traverseChildren->dataType;
+				node->registerIndex = traverseChildren->registerIndex;
+				
 				traverseChildren = traverseChildren->rightSibling;
 			}
-			node->registerIndex = traverseChildren->registerIndex;
 			break;
 		case NUL_NODE:
 			break;
