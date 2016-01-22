@@ -696,6 +696,7 @@ void getExprOrConstValue(AST_NODE* exprOrConstNode, int* iValue, float* fValue)
             else
             {
                 *iValue = exprOrConstNode->semantic_value.const1->const_u.intval;
+                printf("I found a iValue:%d\n", *iValue);
             }
         }
         else

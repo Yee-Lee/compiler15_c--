@@ -1,6 +1,6 @@
 float pi=3.1416;
 
-int sqr(float num)
+float sqr(float num)
 {
   return (num*num);
 }
@@ -8,8 +8,6 @@ int sqr(float num)
 float calarea(int r)
 {
   float area;
-  write(sqr(r));
-  write("\n");
   area = pi * sqr(r);
   return area;
 }
@@ -21,7 +19,6 @@ int floor(float num)
   return temp;
 }
 
-
 int MAIN(){
   
   int r;
@@ -29,7 +26,6 @@ int MAIN(){
   float rem;
   write("Enter an Integer :"); 
   r=read();
-
 
   area=calarea(r);
   rem=area-floor(area);

@@ -17,32 +17,6 @@ void print()
     }
 }
 
-void printA()
-{
-  int i,j;
-  for (i = 0; i < dim; i = i + 1)
-    {
-      for (j = 0; j < dim; j = j + 1)
-  {
-    write(a[i][j]);
-          write(" ");
-  }
-      write("\n"); 
-    }
-}
-void printB()
-{
-  int i,j;
-  for (i = 0; i < dim; i = i + 1)
-    {
-      for (j = 0; j < dim; j = j + 1)
-  {
-    write(b[i][j]);
-          write(" ");
-  }
-      write("\n"); 
-    }
-}
 
 
 void arraymult()
@@ -73,22 +47,19 @@ int MAIN()
     {
       for (j = 0; j < dim; j = j +1)
 	{
-	  a[i][j] = i+j;
+	  a[i][j] = read();
 	}
     }
-  printA();
-  
   write("Enter matrix 2 of dim 4 x 4 : \n");
   for (i = 0; i < dim; i = i +1)
     {
       for (j = 0; j < dim; j = j +1)
 	{
-	  b[i][j]=i-j;
+	  b[i][j] = read();
 	}
     }
-  printB();
   arraymult();
-  
+
   return 0;
 }
 

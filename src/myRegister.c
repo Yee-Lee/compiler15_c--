@@ -25,7 +25,7 @@ char* floatWorkRegisterName[] = {"s22", "s23"};
 IntRegisterTable g_intRegisterTable;
 FloatRegisterTable g_floatRegisterTable;
 PseudoRegisterTable g_pseudoRegisterTable;
-int g_pseudoRegisterBeginOffset = -4;
+int g_pseudoRegisterBeginOffset = -8;
 
 void initializeRegisterTable()
 {
@@ -39,7 +39,7 @@ void resetRegisterTable(int maxLocalVariableOffset)
     memset(g_floatRegisterTable.isAllocated, 0, sizeof(g_floatRegisterTable.isAllocated));
     memset(g_pseudoRegisterTable.isAllocatedVector->data, 0, sizeof(int) * g_pseudoRegisterTable.isAllocatedVector->capacity);
     g_pseudoRegisterTable.isAllocatedVector->size = 0;
-    g_pseudoRegisterBeginOffset = maxLocalVariableOffset - 4;
+    g_pseudoRegisterBeginOffset = maxLocalVariableOffset - 8;
 }
 
 
@@ -66,7 +66,6 @@ int getRegister(ProcessorType processorType)
             return (processorType == INT_REG) ? (INT_REGISTER_COUNT + pseudoTableIndex) : (FLOAT_REGISTER_COUNT + pseudoTableIndex);
         }
     }
-
     myPushBack(g_pseudoRegisterTable.isAllocatedVector, 1);
 
     return (processorType == INT_REG) ? (INT_REGISTER_COUNT + pseudoTableIndex) : (FLOAT_REGISTER_COUNT + pseudoTableIndex);
@@ -151,7 +150,7 @@ void printRestoreRegister(FILE* codeGenOutputFp)
 
 int getPseudoRegisterCorrespondingOffset(int pseudoRegisterIndex)
 {
-    return g_pseudoRegisterBeginOffset - pseudoRegisterIndex * 4;
+    return g_pseudoRegisterBeginOffset - pseudoRegisterIndex * 8;
 }
 
 
