@@ -402,13 +402,13 @@ void declareIdList(AST_NODE* declarationNode, SymbolAttributeKind isVariableOrTy
                 //if(is variable && !function parameter && !globalVariable)
                 if(isVariableOrTypeAttribute == VARIABLE_ATTRIBUTE && !ignoreArrayFirstDimSize && !isGlobalVariable(traverseIDList->semantic_value.identifierSemanticValue.symbolTableEntry))
                 {
-printf("setOffset(local) :%s (%d)\n", traverseIDList->semantic_value.identifierSemanticValue.identifierName, attribute->offsetInAR);
+//printf("setOffset(local) :%s (%d)\n", traverseIDList->semantic_value.identifierSemanticValue.identifierName, attribute->offsetInAR);
                     setOffsetAndUpdateGlobalOffset(attribute);
                 }
 
                 if(isVariableOrTypeAttribute == VARIABLE_ATTRIBUTE && ignoreArrayFirstDimSize){
                     setParamOffset(attribute);
-printf("setOffset(param) :%s (%d)\n", traverseIDList->semantic_value.identifierSemanticValue.identifierName, attribute->offsetInAR);
+//printf("setOffset(param) :%s (%d)\n", traverseIDList->semantic_value.identifierSemanticValue.identifierName, attribute->offsetInAR);
                 }
             }
         }
@@ -696,7 +696,7 @@ void getExprOrConstValue(AST_NODE* exprOrConstNode, int* iValue, float* fValue)
             else
             {
                 *iValue = exprOrConstNode->semantic_value.const1->const_u.intval;
-                printf("I found a iValue:%d\n", *iValue);
+                // printf("I found a iValue:%d\n", *iValue);
             }
         }
         else
@@ -1529,10 +1529,10 @@ void declareFunction(AST_NODE* declarationNode)
         attribute->attr.functionSignature->paramOffset = paramSize;   
     }
 
-printf("function (%s): offsetInAR:%d, paramSize:%d\n", 
-    functionNameID->semantic_value.identifierSemanticValue.identifierName, 
-    attribute->offsetInAR,
-    attribute->attr.functionSignature->paramOffset);
+// printf("function (%s): offsetInAR:%d, paramSize:%d\n", 
+//     functionNameID->semantic_value.identifierSemanticValue.identifierName, 
+//     attribute->offsetInAR,
+//     attribute->attr.functionSignature->paramOffset);
 
     closeScope();
 

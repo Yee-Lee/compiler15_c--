@@ -405,7 +405,6 @@ void codeGenerate(AST_NODE *root)
 
 void codeGenProgramNode(AST_NODE *programNode)
 {
-			print("function declare\n");
 
 	AST_NODE *traverseDeclaration = programNode->child;
 	while(traverseDeclaration)
@@ -497,7 +496,7 @@ void codeGenFunctionDeclaration(AST_NODE *functionDeclNode)
 
 	resetRegisterTable(functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);
 
-printf("fn total offsetInAR:%d\n", functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);
+//printf("fn total offsetInAR:%d\n", functionIdNode->semantic_value.identifierSemanticValue.symbolTableEntry->attribute->offsetInAR);
 
 	AST_NODE* blockNode = functionIdNode->rightSibling->rightSibling;
 	AST_NODE *traverseListNode = blockNode->child;
